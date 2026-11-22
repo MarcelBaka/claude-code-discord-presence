@@ -1,0 +1,6 @@
+# local runtime data (created next to the installed copy, never committed)
+config.json
+state/
+logs/
+node_modules/
+*.tmp

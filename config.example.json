@@ -1,0 +1,21 @@
+{
+  "enabled": true,
+  "language": "en",
+  "applicationId": "",
+  "hideProject": false,
+  "hiddenProjects": [],
+  "aliases": {
+    "my-web-app": "My Web App"
+  },
+  "tokenCount": "no_cache_read",
+  "tokenScope": "launch",
+  "includeSubagents": true,
+  "showSessionCount": false,
+  "showCost": true,
+  "activityType": "watching",
+  "showChat": true,
+  "hideWhenWindowClosed": true,
+  "largeImageKey": "",
+  "largeImageText": "Claude Code",
+  "logMaxBytes": 524288
+}
