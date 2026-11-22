@@ -11,6 +11,8 @@ const { findProjectRoot, displayName } = require('./lib/project');
 const { SessionUsage, aggregate, countFor } = require('./lib/tokens');
 const { DiscordIPC } = require('./lib/discord-ipc');
 const { formatCost, PRICES_DATE } = require('./lib/pricing');
+const { DailyUsage } = require('./lib/daily');
+const os = require('os');
 
 const FAST = process.env.CDP_FAST === '1';
 const T = {
@@ -20,6 +22,7 @@ const T = {
   grace: FAST ? 2500 : 20000,       // brak sesji przez tyle ms → koniec procesu
   minGap: FAST ? 300 : 4000,        // minimalny odstęp między SET_ACTIVITY
   window: FAST ? 3000 : 20000, windowMax: 5, // limit Discord RPC: 5 aktualizacji / 20 s
+  rotate: FAST ? 1500 : 20000,     // today/session rotation slot
   backoffMin: FAST ? 300 : 2000, backoffMax: FAST ? 3000 : 60000,
 };
 
@@ -37,6 +40,7 @@ let discord = null, discordState = 'idle', discordError = null, retryDelay = T.b
 let lastImageCheck = 0, lastScan = 0, shuttingDown = false;
 let lastPresence = null;
 let forceScan = false;
+let lastPhase = -1;
 
 // ---------- pomocnicze ----------
 function pidAlive(pid) {
@@ -113,7 +117,7 @@ function saveRegistry() {
   const data = {
     sessions: [...sessions.values()].map(s => ({
       id: s.id, pid: s.pid, pidVia: s.pidVia, imageName: s.imageName || null, transcriptPath: s.transcriptPath, cwd: s.cwd,
-      projectRoot: s.projectRoot, lastActivity: s.lastActivity, firstSeen: s.firstSeen, processStart: s.processStart, hookPpid: s.hookPpid, entrypoint: s.entrypoint || null,
+      projectRoot: s.projectRoot, lastActivity: s.lastActivity, firstSeen: s.firstSeen, processStart: s.processStart, hookPpid: s.hookPpid, entrypoint: s.entrypoint || null, status: s.status || null, statusSince: s.statusSince || null,
     })),
     runs: [...runs.values()].map(r => ({ key: r.key, start: r.start, sids: [...r.usages.keys()] })),
   };
@@ -171,6 +175,9 @@ function handleEvent(ev) {
   if (ev.hookPpid) s.hookPpid = ev.hookPpid;
   // aktywność użytkownika: start sesji i wysłanie promptu (nie statusLine, nie zmiana katalogu)
   if (ev.event === 'SessionStart' || ev.event === 'UserPromptSubmit') s.lastActivity = Math.max(s.lastActivity, ev.at || Date.now());
+  // Claude's state: working after a prompt, waiting for you after the reply / a notification
+  if (ev.event === 'UserPromptSubmit') { s.status = 'working'; s.statusSince = ev.at || Date.now(); }
+  else if (['Stop', 'StopFailure', 'Notification', 'SessionStart'].includes(ev.event)) { s.status = 'waiting'; s.statusSince = ev.at || Date.now(); }
   if (!s.pid) {
     const r = resolveFromRegistry(sid);
     if (r) { s.pid = r.pid; s.pidVia = r.via; s.processStart = r.startedAt; s.entrypoint = r.entrypoint; }
@@ -303,12 +310,49 @@ function activeSession() {
 function chatPresence() {
   const L = C.strings(cfg.language);
   const activity = { details: L.chat, timestamps: { start: Math.floor(chatSince || Date.now()) } };
-  const TYPES = { playing: 0, listening: 2, watching: 3, competing: 5 };
-  if (TYPES[cfg.activityType]) activity.type = TYPES[cfg.activityType];
+  if (ACT_TYPES[cfg.activityType]) activity.type = ACT_TYPES[cfg.activityType];
   const img = largeImage();
   if (img) activity.assets = { large_image: img, large_text: 'Claude' };
   return { activity, debug: { mode: 'chat', chatSince: new Date(chatSince || Date.now()).toISOString(), note: 'regular Claude chat: no local token data' } };
 }
+
+// ---------- helpers for the card ----------
+const ACT_TYPES = { playing: 0, listening: 2, watching: 3, competing: 5 };
+const WORKING_STALE_MS = 15 * 60000; // no Stop hook and no new reply for this long → treat as waiting
+function modelName(id) {
+  const m = /claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d{1,2}))?(?!\d)/i.exec(String(id || ''));
+  if (!m) return id || null;
+  return `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}${m[3] ? '.' + m[3] : ''}`;
+}
+function assetUrl(name) {
+  const base = String(cfg.assetBaseUrl || '').replace(/\/+$/, '');
+  return /^https:\/\//.test(base) ? `${base}/${name}` : null;
+}
+function sessionStatus(s, su) {
+  let st = s.status || 'waiting';
+  if (st === 'working' && su) {
+    if (su.lastInterruptTs > (s.statusSince || 0)) st = 'waiting';               // Esc – no Stop hook
+    else if (Date.now() - Math.max(s.statusSince || 0, su.lastAssistantTs || 0) > WORKING_STALE_MS) st = 'waiting';
+  }
+  return st;
+}
+function projectLink(projectRoot) {
+  if (!projectRoot) return null;
+  const base = path.basename(projectRoot).toLowerCase();
+  const norm = p => path.resolve(p).replace(/[\\/]+$/, '').toLowerCase();
+  for (const [k, v] of Object.entries(cfg.links || {})) {
+    if (typeof v !== 'string' || !/^https:\/\/[^\s]+$/.test(v)) continue;
+    if (k.toLowerCase() === base || ((k.includes('/') || k.includes('\\')) && norm(k) === norm(projectRoot))) return v;
+  }
+  return null;
+}
+let daily = null;
+function todayTotals() {
+  if (!cfg.showToday || cfg.showToday === 'off') return null;
+  if (!daily) daily = new DailyUsage(process.env.CDP_PROJECTS_DIR || path.join(path.dirname(C.P.claudeSessions), 'projects'), { includeSubagents: cfg.includeSubagents });
+  try { return daily.totals(cfg.pricing); } catch (e) { log('daily', e.message); return null; }
+}
+function rotationPhase() { return Math.floor(Date.now() / T.rotate) % 2; }
 
 function computePresence() {
   if (isChat()) { if (!chatSince) chatSince = Date.now(); return chatPresence(); }
@@ -318,6 +362,7 @@ function computePresence() {
   const run = runs.get(s.runKey) || attachRun(s);
   const usages = [...run.usages.values()];
   for (const u of usages) { try { u.poll(); } catch (e) { log('poll', e.message); } }
+  const su = run.usages.get(s.id) || null;
   const hasSource = usages.some(u => u.hasSource);
   const agg = aggregate(usages, run.start, cfg.pricing);
   const scopeTotals = cfg.tokenScope === 'conversation' ? agg.conversation : agg.sinceLaunch;
@@ -326,10 +371,22 @@ function computePresence() {
   const L = C.strings(cfg.language);
   const fmt = C.formatTokens(value, cfg.language);
   const label = cfg.tokenScope === 'conversation' ? L.convTokens : L.sessionTokens;
-  let state = fmt === null ? L.noData : `${label}: ${fmt}`;
   const cost = hasSource && cfg.showCost && scopeTotals.messages > scopeTotals.unpricedMessages ? formatCost(scopeTotals.costUsd, cfg.language) : null;
-  if (cost) state += ` · ~${cost}${scopeTotals.unpricedMessages ? '+' : ''}`;
+  const costPart = cost ? ` · ~${cost}${scopeTotals.unpricedMessages ? '+' : ''}` : '';
+  const status = sessionStatus(s, su);
+  let state;
+  if (fmt === null) state = L.noData;
+  else if (cfg.showStatus) state = `${status === 'working' ? L.working : L.waiting} · ${fmt} ${L.tokensWord}${costPart}`;
+  else state = `${label}: ${fmt}${costPart}`;
   if (cfg.showSessionCount && sessions.size > 1) state += ` · ${sessions.size} ${L.sessions}`;
+  // today's totals: every other rotation slot replaces the state line, or only the tooltip
+  const today = todayTotals();
+  let todayText = null;
+  if (today && today.messages) {
+    const tc = cfg.showCost && today.messages > today.unpricedMessages ? ` · ~${formatCost(today.costUsd, cfg.language)}` : '';
+    todayText = `${L.today}: ${C.formatTokens(countFor(today, cfg.tokenCount), cfg.language)} ${L.tokensWord}${tc}`;
+    if (cfg.showToday === 'rotate' && rotationPhase() === 1) state = todayText;
+  }
   const activity = {
     details: name ? `${L.project}: ${name}` : L.hidden,
     state,
@@ -337,14 +394,27 @@ function computePresence() {
   };
   // Discord shows only one "Playing" (type 0) activity at a time; another type lets it
   // appear next to e.g. the VS Code extension. RPC accepts 0, 2, 3, 5.
-  const TYPES = { playing: 0, listening: 2, watching: 3, competing: 5 };
-  if (cfg.activityType && TYPES[cfg.activityType] !== undefined && TYPES[cfg.activityType] !== 0) activity.type = TYPES[cfg.activityType];
+  if (cfg.activityType && ACT_TYPES[cfg.activityType]) activity.type = ACT_TYPES[cfg.activityType];
+  // big icon tooltip: model and effort (+ today's totals when not rotating)
+  const tip = [];
+  if (cfg.showModel && su && su.lastModel) tip.push(modelName(su.lastModel) + (su.lastEffort ? ` · ${su.lastEffort} ${L.effort}` : ''));
+  if (todayText && cfg.showToday === 'tooltip') tip.push(todayText);
+  const largeText = (tip.join(' · ') || cfg.largeImageText || 'Claude Code').slice(0, 128);
   const img = largeImage();
-  if (img) activity.assets = { large_image: img, large_text: cfg.largeImageText || 'Claude Code' };
+  const assets = {};
+  if (img) { assets.large_image = img; assets.large_text = largeText.length >= 2 ? largeText : 'Claude Code'; }
+  if (cfg.showStatus) {
+    const icon = assetUrl(status === 'working' ? 'status-working.png' : 'status-waiting.png');
+    if (icon && img) { assets.small_image = icon; assets.small_text = status === 'working' ? L.workingLong : L.waitingLong; }
+  }
+  if (Object.keys(assets).length) activity.assets = assets;
+  const link = name ? projectLink(s.projectRoot) : null; // never for hidden projects
+  if (link) activity.buttons = [{ label: /^https:\/\/github\.com\//i.test(link) ? L.githubButton : L.openButton, url: link }];
   return {
     activity,
     debug: {
       sessionId: s.id, pid: s.pid, pidVia: s.pidVia || null, runStart: new Date(run.start).toISOString(),
+      claudeState: status, model: su && su.lastModel, effort: su && su.lastEffort, today, link,
       tokenSource: {
         kind: 'transcript-jsonl',
         files: usages.flatMap(u => [...u.tails.values()].map(t => ({ file: t.file, kind: t.kind, exists: t.exists, lines: t.lines, badLines: t.badLines, bytesRead: t.offset }))),
@@ -466,6 +536,7 @@ async function tick() {
     if (!cfg.enabled) return shutdown('integration disabled');
 
     const gotEvents = processInbox();
+    if (rotationPhase() !== lastPhase) { lastPhase = rotationPhase(); forceScan = true; }
     if (gotEvents || forceScan || Date.now() - lastScan >= T.scan) {
       lastScan = Date.now(); forceScan = false;
       checkLiveness();
@@ -475,7 +546,7 @@ async function tick() {
     }
 
     if (!sessions.size && !isChat()) {
-      if (Date.now() - noSessionsSince > T.grace) return shutdown('no open sessions');
+      if (!cfg.autostart && Date.now() - noSessionsSince > T.grace) return shutdown('no open sessions');
     } else noSessionsSince = Date.now();
 
     await ensureDiscord();

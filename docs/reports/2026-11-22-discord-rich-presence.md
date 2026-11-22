@@ -24,8 +24,14 @@
 4. Estimated cost next to the tokens (`cost on|off`).
 5. Activity type `watching` by default: Discord shows only one “Playing” activity, so with the VS Code extension only one was visible; with “Watching” both are shown and VS Code ranks above Claude (confirmed on the profile).
 6. Regular Claude chat tab → `Chatting with Claude` with its own timer; back to Code restores the project and its original timer (confirmed on the profile).
+7. Working / waiting state (UserPromptSubmit, Stop, Notification hooks; Esc detected from the transcript interrupt marker; 15-minute fallback) with status badges from `assets/`.
+8. Model and effort of the latest reply in the image tooltip.
+9. Today's totals across all transcripts changed since local midnight, rotating with the session line.
+10. Optional per-project buttons (`link`), never for hidden projects; Git remote → https with credentials stripped.
+11. Optional autostart at sign-in (Startup-folder VBS, no window) – standby process keeps running without sessions.
+12. `update` command (downloads the main branch ZIP and reruns the installer); GitHub Actions on Windows, Node 18/20/22.
 
-## Tests (`node --test test/` → 21/21 pass)
+## Tests (`node --test test/unit.test.js test/integration.test.js` → 25/25 pass)
 | area | how | result |
 |---|---|---|
 | token counting and dedup | unit: blocks with the same message.id, updated record, partial line, truncated file, duplicate across files, subagent, launch filter, compact_boundary | pass |
@@ -41,6 +47,7 @@
 | /clear, resume | same PID keeps timer and tokens; entries before launch excluded | pass |
 | window closed / reopened | activity hidden, process stays, back with the same timer | pass |
 | chat tab | chat activity, back to Code with the original timer, chat keeps the process alive, closing the window ends it | pass |
+| working/waiting, model, today, buttons, autostart | end-to-end: Waiting → Working → Stop → Esc, model/effort tooltip, badges, GitHub button, Today rotation across projects, standby without sessions; unit: daily dedup, VBS launcher, `link` from Git remote | pass |
 | privacy | payload without paths/user name; prompt not stored in registry or logs | pass |
 | real Discord | activity, icon, cost, “Watching” type, chat card – confirmed by the user's screenshots | pass |
 | real session | installed hook with real data: PID from `~/.claude/sessions`, token count equal to an independent `cli.js count` | pass |
@@ -48,6 +55,7 @@
 ## Limitations
 - The model call made by `/compact` itself has no `usage` in the transcript → not counted (tokens and cost).
 - Cost is the API-price equivalent, not a subscription bill; Haiku 5.5 long-prompt premium and Bedrock/Vertex prices are not modelled.
-- Chat tab: no tokens/cost (no local transcript); the background process is started by Claude Code hooks, so a chat-only start after sign-in shows nothing until the first Claude Code event.
+- Chat tab: no tokens/cost (no local transcript); without `autostart on` a chat-only start after sign-in shows nothing until the first Claude Code event.
+- Status badges are loaded by Discord from the GitHub repository (`assetBaseUrl`).
 - Tab detection depends on the Claude app's page title/URL (` - Claude Code`); an app update could change it.
 - Linux/macOS/WSL code paths exist but are untested.

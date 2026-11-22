@@ -20,10 +20,12 @@ const env = {
   CDP_PIPE_NAME: `\\\\.\\pipe\\cdp-test-daemon-${rnd}`,
   CDP_DISCORD_PIPE_PREFIX: `\\\\.\\pipe\\cdp-test-discord-${rnd}-`,
   CDP_FAST: '1',
+  CDP_PROJECTS_DIR: path.join(tmp, 'projects'),
+  CDP_STARTUP_DIR: path.join(tmp, 'startup'),
 };
 fs.mkdirSync(env.CDP_DATA_DIR, { recursive: true });
 fs.mkdirSync(path.join(env.CDP_CLAUDE_DIR, 'sessions'), { recursive: true });
-fs.writeFileSync(path.join(env.CDP_DATA_DIR, 'config.json'), JSON.stringify({ language: 'pl', largeImageKey: 'none', applicationId: '123456789012345678', aliases: { 'beta-repo': 'Beta – alias' } }));
+fs.writeFileSync(path.join(env.CDP_DATA_DIR, 'config.json'), JSON.stringify({ language: 'pl', largeImageKey: 'none', showStatus: false, showModel: false, showToday: 'off', showChat: false, assetBaseUrl: '', applicationId: '123456789012345678', aliases: { 'beta-repo': 'Beta – alias' } }));
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function waitFor(fn, ms = 10000, what = 'warunek') {
@@ -254,6 +256,8 @@ test('zamknięcie okna aplikacji Claude desktop → aktywność ukryta, ponowne 
 });
 
 test('przełączenie na zwykły czat Claude → aktywność czatu; powrót do Code → projekt z tym samym czasem; czat utrzymuje proces', { timeout: 60000 }, async () => {
+  const cfgFile = path.join(env.CDP_DATA_DIR, 'config.json');
+  fs.writeFileSync(cfgFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(cfgFile, 'utf8')), showChat: true }));
   const winFile = path.join(tmp, 'window-state-chat.json');
   const setWin = (mode, visible = true, vis = {}) => fs.writeFileSync(winFile, JSON.stringify({ vis, app: { visible, mode } }));
   setWin('code');
@@ -290,4 +294,64 @@ test('przełączenie na zwykły czat Claude → aktywność czatu; powrót do Co
   await waitFor(async () => !(await daemonAlive()), 15000, 'koniec demona');
   await discord.stop();
   delete env.CDP_WINDOW_STATE_FILE;
+});
+
+test('stan Claude (Working/Waiting, Esc), model i effort, ikonki stanu, przycisk GitHub, rotacja Today, tryb autostartu', { timeout: 90000 }, async () => {
+  const cfgFile = path.join(env.CDP_DATA_DIR, 'config.json');
+  const base = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+  fs.writeFileSync(cfgFile, JSON.stringify({ ...base, enabled: true, language: 'en', showStatus: true, showModel: true, showToday: 'rotate', showChat: false,
+    largeImageKey: 'https://example.test/big.png', assetBaseUrl: 'https://example.test/assets', links: { 'feat-repo': 'https://github.com/example/feat-repo' }, autostart: true }));
+  const discord = new FakeDiscord(); await discord.start();
+  const repo = path.join(tmp, 'feat-repo'); fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  const projDir = path.join(tmp, 'projects', 'feat'); fs.mkdirSync(projDir, { recursive: true });
+  const tr = path.join(projDir, 'f1.jsonl');
+  const line = (id, out, effort = 'high', model = 'claude-opus-5-5') => JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(), effort, message: { id, model, usage: { input_tokens: 0, output_tokens: out, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }) + '\n';
+  fs.writeFileSync(tr, line('f1a', 1000));
+  // another project's session today (not open any more) - counted in "Today" only
+  const other = path.join(tmp, 'projects', 'other'); fs.mkdirSync(other, { recursive: true });
+  fs.writeFileSync(path.join(other, 'o1.jsonl'), line('o1a', 4000, 'low', 'claude-haiku-5-5'));
+  const start = Date.now() - 3000;
+  const p = fakeClaude('f1', start);
+  const last = () => discord.last() && discord.last().activity;
+
+  await hook({ hook_event_name: 'SessionStart', session_id: 'f1', transcript_path: tr, cwd: repo, source: 'startup' });
+  const w = await waitFor(() => { const a = last(); return a && a.state && a.state.startsWith('Waiting · ') && a; }, 15000, 'Waiting');
+  assert.strictEqual(w.details, 'Project: feat-repo');
+  assert.match(w.state, /^Waiting · 1k tokens · ~\$0\.02$/);
+  assert.strictEqual(w.assets.large_image, 'https://example.test/big.png');
+  assert.strictEqual(w.assets.large_text, 'Opus 5.5 · high effort');
+  assert.strictEqual(w.assets.small_image, 'https://example.test/assets/status-waiting.png');
+  assert.strictEqual(w.assets.small_text, 'Waiting for you');
+  assert.deepStrictEqual(w.buttons, [{ label: 'View on GitHub', url: 'https://github.com/example/feat-repo' }]);
+  assert.strictEqual(w.timestamps.start, start);
+
+  await hook({ hook_event_name: 'UserPromptSubmit', session_id: 'f1', transcript_path: tr, cwd: repo, prompt: 'x' });
+  const k = await waitFor(() => { const a = last(); return a && a.state && a.state.startsWith('Working · ') && a; }, 15000, 'Working');
+  assert.strictEqual(k.assets.small_image, 'https://example.test/assets/status-working.png');
+  assert.strictEqual(k.assets.small_text, 'Claude is working…');
+
+  fs.appendFileSync(tr, line('f1b', 500, 'max'));
+  await hook({ hook_event_name: 'Stop', session_id: 'f1', transcript_path: tr, cwd: repo });
+  const s2 = await waitFor(() => { const a = last(); return a && a.state && a.state.startsWith('Waiting · 1.5k') && a; }, 15000, 'Waiting after Stop');
+  assert.strictEqual(s2.assets.large_text, 'Opus 5.5 · max effort', 'effort follows the latest reply');
+
+  // Esc during a reply: no Stop hook, an interrupt marker in the transcript instead
+  await hook({ hook_event_name: 'UserPromptSubmit', session_id: 'f1', transcript_path: tr, cwd: repo, prompt: 'y' });
+  await waitFor(() => { const a = last(); return a && a.state && a.state.startsWith('Working · '); }, 15000, 'Working 2');
+  await sleep(50);
+  fs.appendFileSync(tr, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] } }) + '\n');
+  await waitFor(() => { const a = last(); return a && a.state && a.state.startsWith('Waiting · '); }, 15000, 'Waiting after Esc');
+
+  // "Today" slot: both transcripts, any project (1000 + 500 + 4000 output tokens)
+  const t = await waitFor(() => { const a = last(); return a && a.state && a.state.startsWith('Today: ') && a; }, 15000, 'Today rotation');
+  assert.match(t.state, /^Today: 5\.5k tokens · ~\$0\.03$/);
+
+  // autostart (standby): no open session -> activity cleared, but the process keeps running
+  p.kill('SIGKILL');
+  await waitFor(() => discord.last().activity === null, 15000, 'cleared');
+  await sleep(3500);
+  assert.ok(await daemonAlive(), 'standby keeps the process');
+  fs.writeFileSync(cfgFile, JSON.stringify({ ...base, enabled: false }));
+  await waitFor(async () => !(await daemonAlive()), 15000, 'stopped');
+  await discord.stop();
 });

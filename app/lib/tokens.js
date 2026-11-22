@@ -67,6 +67,9 @@ class SessionUsage {
     this.messages = new Map(); // message.id -> {ts, file, usage, kind}
     this.duplicateLines = 0;
     this.compactions = 0;
+    this.lastModel = null; this.lastEffort = null; this.lastAssistantTs = 0; // main conversation only
+    this.lastInterruptTs = 0; // "[Request interrupted by user]" (Esc) – Stop hook does not fire then
+    this.lastWriteTs = 0;
     if (transcriptPath) this.tails.set(transcriptPath, new FileTail(transcriptPath, 'main'));
   }
 
@@ -101,6 +104,20 @@ class SessionUsage {
   }
 
   ingest(line, tail) {
+    if (tail.kind === 'main' && line) {
+      if (line.indexOf('[Request interrupted by user') !== -1) {
+        // Only a real interrupt marker: a user message whose first text block starts with it
+        // (the same words inside file contents or tool results must not count).
+        try {
+          const u = JSON.parse(line);
+          const c = u && u.type === 'user' && u.message && u.message.content;
+          const text = typeof c === 'string' ? c : Array.isArray(c) && c[0] && c[0].type === 'text' ? c[0].text : '';
+          if (typeof text === 'string' && text.startsWith('[Request interrupted by user')) {
+            this.lastInterruptTs = Math.max(this.lastInterruptTs, Date.parse(u.timestamp) || Date.now());
+          }
+        } catch {}
+      }
+    }
     if (!line || line.indexOf('"usage"') === -1) {
       if (line && line.indexOf('"compact_boundary"') !== -1) this.compactions++;
       return;
@@ -118,6 +135,9 @@ class SessionUsage {
     u.c5m = num(cc.ephemeral_5m_input_tokens); u.c1h = num(cc.ephemeral_1h_input_tokens);
     const speed = m.usage.speed || o.speed || null;
     const ts = Date.parse(o.timestamp) || 0;
+    if (tail.kind === 'main' && m.model && ts >= this.lastAssistantTs) {
+      this.lastAssistantTs = ts; this.lastModel = m.model; this.lastEffort = o.effort || o.perTurnEffort || this.lastEffort;
+    }
     const prev = this.messages.get(id);
     if (prev) {
       this.duplicateLines++;

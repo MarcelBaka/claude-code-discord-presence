@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const EVENTS = ['SessionStart', 'UserPromptSubmit', 'CwdChanged', 'SessionEnd'];
+const EVENTS = ['SessionStart', 'UserPromptSubmit', 'Stop', 'Notification', 'CwdChanged', 'SessionEnd'];
 const MARKER = /discord-presence[\\/]+hook\.js/i;
 
 function settingsPath() { return process.env.CDP_SETTINGS || path.join(os.homedir(), '.claude', 'settings.json'); }

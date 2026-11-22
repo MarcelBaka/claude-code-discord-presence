@@ -7,15 +7,22 @@
   "aliases": {
     "my-web-app": "My Web App"
   },
+  "links": {},
   "tokenCount": "no_cache_read",
   "tokenScope": "launch",
   "includeSubagents": true,
   "showSessionCount": false,
   "showCost": true,
+  "showStatus": true,
+  "showModel": true,
+  "showToday": "rotate",
   "activityType": "watching",
   "showChat": true,
   "hideWhenWindowClosed": true,
+  "autostart": false,
   "largeImageKey": "",
   "largeImageText": "Claude Code",
+  "assetBaseUrl": "https://raw.githubusercontent.com/MarcelBaka/claude-code-discord-presence/main/assets",
+  "updateRepo": "MarcelBaka/claude-code-discord-presence",
   "logMaxBytes": 524288
 }

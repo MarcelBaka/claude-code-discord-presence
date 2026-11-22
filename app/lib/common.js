@@ -41,6 +41,13 @@ const DEFAULT_CONFIG = {
   showCost: true,
   activityType: 'watching',
   showChat: true,
+  showStatus: true,
+  showModel: true,
+  showToday: 'rotate',
+  links: {},
+  autostart: false,
+  assetBaseUrl: 'https://raw.githubusercontent.com/MarcelBaka/claude-code-discord-presence/main/assets',
+  updateRepo: 'MarcelBaka/claude-code-discord-presence',
   pricing: {},
   hideWhenWindowClosed: true,
   largeImageKey: '',
@@ -81,6 +88,8 @@ function loadConfig() {
   cfg.applicationId = String(cfg.applicationId || '').trim();
   if (!['en', 'pl'].includes(cfg.language)) cfg.language = 'en';
   if (!['playing', 'listening', 'watching', 'competing'].includes(cfg.activityType)) cfg.activityType = 'watching';
+  if (!['rotate', 'tooltip', 'off'].includes(cfg.showToday)) cfg.showToday = cfg.showToday === false ? 'off' : 'rotate';
+  if (!cfg.links || typeof cfg.links !== 'object') cfg.links = {};
   return cfg;
 }
 
@@ -115,8 +124,8 @@ function formatTokens(n, lang = 'pl') {
 }
 
 const STRINGS = {
-  en: { project: 'Project', hidden: 'Project hidden', sessionTokens: 'Session tokens', convTokens: 'Conversation tokens', noData: 'Tokens: no data', sessions: 'sessions', chat: 'Chatting with Claude' },
-  pl: { project: 'Projekt', hidden: 'Projekt ukryty', sessionTokens: 'Tokeny sesji', convTokens: 'Tokeny rozmowy', noData: 'Tokeny: brak danych', sessions: 'sesje', chat: 'Rozmawia z Claude' },
+  en: { project: 'Project', hidden: 'Project hidden', sessionTokens: 'Session tokens', convTokens: 'Conversation tokens', noData: 'Tokens: no data', sessions: 'sessions', chat: 'Chatting with Claude', working: 'Working', waiting: 'Waiting', workingLong: 'Claude is working…', waitingLong: 'Waiting for you', tokensWord: 'tokens', today: 'Today', effort: 'effort', githubButton: 'View on GitHub', openButton: 'Open project' },
+  pl: { project: 'Projekt', hidden: 'Projekt ukryty', sessionTokens: 'Tokeny sesji', convTokens: 'Tokeny rozmowy', noData: 'Tokeny: brak danych', sessions: 'sesje', chat: 'Rozmawia z Claude', working: 'Pracuje', waiting: 'Czeka', workingLong: 'Claude pracuje…', waitingLong: 'Czeka na Ciebie', tokensWord: 'tokenów', today: 'Dziś', effort: 'effort', githubButton: 'Zobacz na GitHubie', openButton: 'Otwórz projekt' },
 };
 function strings(lang) { return STRINGS[lang] || STRINGS.en; }
 

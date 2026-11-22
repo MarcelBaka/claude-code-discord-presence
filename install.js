@@ -56,6 +56,9 @@ function stopDaemon(dir) {
   if (appId) merged.applicationId = appId;
   fs.writeFileSync(cfgPath, JSON.stringify(merged, null, 2) + '\n', 'utf8');
 
+  // autostart launcher points at this install – rewrite it when enabled
+  if (merged.autostart) { try { require(path.join(DEST, 'lib', 'autostart.js')).enable(process.execPath, path.join(DEST, 'daemon.js')); } catch (e) { console.error('autostart:', e.message); } }
+
   // 3. hooki
   const next = S.addOurs(cur.data, process.execPath, path.join(DEST, 'hook.js'));
   let bak = null;

@@ -117,7 +117,7 @@ test('settings.json: zachowanie istniejących hooków i statusLine, idempotencja
   const once = S.addOurs(orig, 'C:\\Program Files\\nodejs\\node.exe', 'C:\\Users\\x\\.claude\\discord-presence\\hook.js');
   const twice = S.addOurs(once, 'C:\\Program Files\\nodejs\\node.exe', 'C:\\Users\\x\\.claude\\discord-presence\\hook.js');
   assert.deepStrictEqual(twice, once);
-  assert.strictEqual(S.countOurs(twice), 4);
+  assert.strictEqual(S.countOurs(twice), 6); // SessionStart, UserPromptSubmit, Stop, Notification, CwdChanged, SessionEnd
   assert.deepStrictEqual(twice.statusLine, orig.statusLine);
   assert.deepStrictEqual(twice.hooks.PreToolUse, orig.hooks.PreToolUse);
   assert.deepStrictEqual(twice.hooks.SessionStart[0], orig.hooks.SessionStart[0]);
@@ -170,4 +170,51 @@ test('cost: aggregate sums per model once per message.id and flags unknown model
   assert.ok(Math.abs(t.costUsd - 20.5) < 1e-9);
   assert.strictEqual(t.unpricedMessages, 1);
   assert.deepStrictEqual(t.unpricedModels, ['mystery']);
+});
+
+test('daily: only today, every project, dedup by message.id, subagents', () => {
+  const { DailyUsage, localMidnight } = require('../app/lib/daily');
+  const root = path.join(tmp, 'daily-projects');
+  const mk = (proj, file, lines) => { fs.mkdirSync(path.join(root, proj), { recursive: true }); fs.writeFileSync(path.join(root, proj, file), lines.join('\n') + '\n'); };
+  const today = new Date(Math.min(Date.now(), localMidnight() + 3600e3)).toISOString();
+  const yesterday = new Date(localMidnight() - 3600e3).toISOString();
+  const l = (id, ts, out) => JSON.stringify({ type: 'assistant', timestamp: ts, message: { id, model: 'claude-opus-5-5', usage: { input_tokens: 0, output_tokens: out, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } });
+  mk('a', 's1.jsonl', [l('x1', yesterday, 7), l('x2', today, 100), l('x2', today, 100)]);
+  mk('b', 's2.jsonl', [l('x3', today, 20), l('x2', today, 100)]); // x2 copied (resume) - once
+  fs.mkdirSync(path.join(root, 'b', 's2', 'subagents'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'b', 's2', 'subagents', 'agent-1.jsonl'), l('x4', today, 3) + '\n');
+  const d = new DailyUsage(root);
+  const t = d.totals();
+  assert.strictEqual(t.files, 2);
+  assert.strictEqual(t.output, 123);
+  assert.strictEqual(t.messages, 3);
+  assert.strictEqual(t.subagentMessages, 1);
+});
+
+test('autostart: startup launcher written as UTF-16 VBS and removed', () => {
+  process.env.CDP_STARTUP_DIR = path.join(tmp, 'Startup ż');
+  const a = require('../app/lib/autostart');
+  const f = a.enable('C:\\Program Files\\nodejs\\node.exe', 'C:\\Users\\Zoë\\.claude\\discord-presence\\daemon.js');
+  assert.ok(a.isEnabled());
+  const buf = fs.readFileSync(f);
+  assert.deepStrictEqual([...buf.subarray(0, 2)], [0xff, 0xfe]);
+  const txt = buf.subarray(2).toString('utf16le');
+  assert.ok(txt.includes('sh.Run """C:\\Program Files\\nodejs\\node.exe"" ""C:\\Users\\Zoë\\.claude\\discord-presence\\daemon.js"" --standby", 0, False'), txt);
+  assert.ok(a.disable());
+  assert.ok(!a.isEnabled());
+  delete process.env.CDP_STARTUP_DIR;
+});
+
+test('cli link: reads the Git remote (ssh to https, credentials stripped)', () => {
+  const { spawnSync } = require('child_process');
+  const data = path.join(tmp, 'cli-data'); fs.mkdirSync(data, { recursive: true });
+  const repo = path.join(tmp, 'site-repo'); fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  fs.writeFileSync(path.join(repo, '.git', 'config'), '[core]\n\tbare = false\n[remote "origin"]\n\turl = git@github.com:someone/site-repo.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n');
+  const run = (...a) => spawnSync(process.execPath, [path.join(__dirname, '..', 'app', 'cli.js'), ...a], { env: { ...process.env, CDP_DATA_DIR: data }, encoding: 'utf8' });
+  assert.strictEqual(run('link', repo).status, 0);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(data, 'config.json'), 'utf8')).links, { 'site-repo': 'https://github.com/someone/site-repo' });
+  fs.writeFileSync(path.join(repo, '.git', 'config'), '[remote "origin"]\n\turl = https://user:secret@github.com/someone/site-repo.git\n');
+  assert.strictEqual(run('link', repo).status, 0);
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(data, 'config.json'), 'utf8')).links['site-repo'], 'https://github.com/someone/site-repo');
+  assert.notStrictEqual(run('link', 'x', 'http://insecure.example').status, 0);
 });

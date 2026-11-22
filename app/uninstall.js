@@ -18,6 +18,8 @@ const C = require('./lib/common');
     s.on('error', () => { clearTimeout(t); resolve(); });
   });
 
+  try { if (require('./lib/autostart').disable()) console.log('Autostart at sign-in removed.'); } catch {}
+
   const sp = S.settingsPath();
   try {
     const cur = S.readSettings(sp);

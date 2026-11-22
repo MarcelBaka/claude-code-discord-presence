@@ -6,6 +6,8 @@ const net = require('net');
 const C = require('./lib/common');
 const { SessionUsage, aggregate, countFor } = require('./lib/tokens');
 const { findProjectRoot, displayName } = require('./lib/project');
+const path = require('path');
+const autostart = require('./lib/autostart');
 
 const [cmd, ...args] = process.argv.slice(2);
 
@@ -46,6 +48,13 @@ const help = `Discord Rich Presence for Claude Code
   node cli.js language <en|pl>    language of the text shown on Discord
   node cli.js image <key|url|auto|none>   large image: Art Asset key, image URL, app icon (auto) or none
   node cli.js type <watching|playing|competing|listening>   activity type (watching = below the VS Code extension)
+  node cli.js status-icon <on|off>   show whether Claude is working or waiting for you
+  node cli.js model <on|off>       show the model and effort in the image tooltip
+  node cli.js today <rotate|tooltip|off>   today's totals across all sessions
+  node cli.js link <folder> [url]  add a button (e.g. View on GitHub) for a project; no url = read the Git remote
+  node cli.js unlink <folder>
+  node cli.js autostart <on|off>   start at Windows sign-in (shows the chat tab without a Code session)
+  node cli.js update               download the latest version from GitHub and reinstall
   node cli.js chat <on|off>       also show an activity while the regular Claude chat tab is open
   node cli.js cost <on|off>       show the estimated API-price cost next to the tokens
   node cli.js tokens <all|no_cache_read|output>   what the token counter includes
@@ -58,6 +67,54 @@ const help = `Discord Rich Presence for Claude Code
 
 const fail = msg => { console.error(msg); process.exit(1); };
 
+// https URL of a repository's "origin" remote (git@github.com:a/b.git → https://github.com/a/b)
+function gitRemoteUrl(dir) {
+  try {
+    const r = findProjectRoot(dir);
+    if (!r || !r.git) return null;
+    let gitDir = path.join(r.root, '.git');
+    const conf = fs.readFileSync(path.join(gitDir, 'config'), 'utf8');
+    const m = /\[remote "origin"\][^\[]*?url\s*=\s*(\S+)/.exec(conf);
+    if (!m) return null;
+    let u = m[1].trim();
+    const ssh = /^git@([^:]+):(.+?)(\.git)?$/.exec(u);
+    if (ssh) u = `https://${ssh[1]}/${ssh[2]}`;
+    u = u.replace(/^https:\/\/[^@/]+@/, 'https://').replace(/\.git$/, ''); // never keep credentials
+    return /^https:\/\//.test(u) ? u : null;
+  } catch { return null; }
+}
+
+function download(url, dest, hops = 0) {
+  return new Promise((resolve, reject) => {
+    require('https').get(url, { headers: { 'User-Agent': 'claude-code-discord-presence' } }, res => {
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && hops < 5) { res.resume(); return resolve(download(new URL(res.headers.location, url).href, dest, hops + 1)); }
+      if (res.statusCode !== 200) { res.resume(); return reject(new Error(`HTTP ${res.statusCode} for ${url}`)); }
+      const out = fs.createWriteStream(dest);
+      res.pipe(out); out.on('finish', () => out.close(resolve)); out.on('error', reject);
+    }).on('error', reject);
+  });
+}
+
+async function update() {
+  const os = require('os');
+  const { spawnSync } = require('child_process');
+  const repo = C.loadConfig().updateRepo;
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) fail('updateRepo in config.json must look like "owner/name".');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cdp-update-'));
+  const zip = path.join(tmp, 'source.zip');
+  console.log(`Downloading https://github.com/${repo} (main)…`);
+  await download(`https://codeload.github.com/${repo}/zip/refs/heads/main`, zip);
+  const outDir = path.join(tmp, 'x');
+  const ex = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Expand-Archive -LiteralPath '${zip.replace(/'/g, "''")}' -DestinationPath '${outDir.replace(/'/g, "''")}' -Force`], { encoding: 'utf8' });
+  if (ex.status !== 0) fail(`Could not unpack the download: ${ex.stderr}`);
+  const top = fs.readdirSync(outDir).map(n => path.join(outDir, n)).find(d => fs.existsSync(path.join(d, 'install.js')));
+  if (!top) fail('The download does not contain install.js.');
+  const r = spawnSync(process.execPath, [path.join(top, 'install.js')], { stdio: 'inherit', env: { ...process.env, CDP_INSTALL_DIR: C.P.app } });
+  try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+  if (r.status !== 0) fail('Update failed – the previous version is still installed.');
+  console.log('Updated. Restart open Claude Code sessions if the hooks changed.');
+}
+
 (async () => {
   switch (cmd) {
     case 'status': case 'diag': case 'diagnose': {
@@ -67,6 +124,7 @@ const fail = msg => { console.error(msg); process.exit(1); };
       if (args.includes('--json')) { console.log(JSON.stringify({ daemonRunning: alive, config: cfg, status: st }, null, 2)); break; }
       console.log(`Integration: ${cfg.enabled ? 'enabled' : 'DISABLED'}`);
       console.log(`Application ID: ${cfg.applicationId ? cfg.applicationId : 'MISSING – run: node cli.js set-app-id <ID>'}`);
+      console.log(`Autostart at sign-in: ${autostart.isEnabled() ? 'on' : 'off'}`);
       console.log(`Background process: ${alive ? `running (PID ${st && st.daemonPid})` : 'not running (starts on the next Claude event)'}`);
       if (!alive || !st || !st.daemonPid) break;
       if (st.claudeApp) console.log(`Claude app: window ${st.claudeApp.windowVisible ? 'visible' : 'hidden/closed'}, tab: ${st.claudeApp.tab}${st.claudeApp.showingChat ? ' → showing the chat activity' : ''}`);
@@ -80,6 +138,8 @@ const fail = msg => { console.error(msg); process.exit(1); };
         const ts = st.active.tokenSource;
         console.log(`\nToken source: ${ts.kind}, mode "${ts.mode}", scope "${ts.scope}", subagents: ${ts.includeSubagents ? 'yes' : 'no'}`);
         console.log(`Launch time (Discord timer start): ${st.active.runStart}`);
+        console.log(`Claude state: ${st.active.claudeState}   model: ${st.active.model || '-'}   effort: ${st.active.effort || '-'}${st.active.link ? `   button: ${st.active.link}` : ''}`);
+        if (st.active.today) console.log(`Today (${st.active.today.files} transcripts): ${fmtT(st.active.today)}`);
         for (const f of ts.files) console.log(`  ${f.kind.padEnd(8)} ${f.exists ? '' : '[MISSING] '}${f.file}  lines: ${f.lines}, malformed: ${f.badLines}`);
         console.log(`  unique responses: ${ts.uniqueMessages}, duplicate lines collapsed: ${ts.duplicateLinesCollapsed}, /compact boundaries: ${ts.compactBoundariesSeen}`);
         console.log(`  since launch:       ${fmtT(ts.sinceLaunch)}`);
@@ -138,6 +198,46 @@ const fail = msg => { console.error(msg); process.exit(1); };
       editConfig(c => { c.activityType = args[0]; }); console.log('Done.');
       break;
     }
+    case 'status-icon':
+      if (!['on', 'off'].includes(args[0])) fail('Usage: status-icon <on|off>');
+      editConfig(c => { c.showStatus = args[0] === 'on'; }); console.log('Done.');
+      break;
+    case 'model':
+      if (!['on', 'off'].includes(args[0])) fail('Usage: model <on|off>');
+      editConfig(c => { c.showModel = args[0] === 'on'; }); console.log('Done.');
+      break;
+    case 'today':
+      if (!['rotate', 'tooltip', 'off'].includes(args[0])) fail('Usage: today <rotate|tooltip|off>');
+      editConfig(c => { c.showToday = args[0]; }); console.log('Done.');
+      break;
+    case 'link': {
+      if (!args[0]) fail('Usage: link <folder-name-or-path> [https-url]');
+      let url = args[1];
+      if (!url) url = gitRemoteUrl(args[0]);
+      if (!url || !/^https:\/\/\S+$/.test(url)) fail('Give an https:// URL, or a path to a Git repository with an https/ssh "origin" remote. Only link public pages.');
+      const key = fs.existsSync(args[0]) ? path.basename(path.resolve(findProjectRoot(args[0]).root)) : args[0];
+      editConfig(c => { c.links = c.links || {}; c.links[key] = url; });
+      console.log(`Button for "${key}": ${url}\nNote: Discord shows buttons to other people, not on your own view of your profile.`);
+      break;
+    }
+    case 'unlink':
+      editConfig(c => { if (c.links) delete c.links[args[0]]; });
+      console.log('Button removed.');
+      break;
+    case 'autostart': {
+      if (!['on', 'off'].includes(args[0])) fail('Usage: autostart <on|off>');
+      if (args[0] === 'on') {
+        const f = autostart.enable(process.execPath, path.join(C.P.app, 'daemon.js'));
+        editConfig(c => { c.autostart = true; });
+        console.log(`Autostart on: ${f}\nThe background process now also starts at sign-in and stays running (it shows the chat tab without a Code session).`);
+      } else {
+        autostart.disable();
+        editConfig(c => { c.autostart = false; });
+        console.log('Autostart off. The background process again exits ~20 s after the last Claude Code session.');
+      }
+      break;
+    }
+    case 'update': await update(); break;
     case 'chat':
       if (!['on', 'off'].includes(args[0])) fail('Usage: chat <on|off>');
       editConfig(c => { c.showChat = args[0] === 'on'; }); console.log('Done.');
