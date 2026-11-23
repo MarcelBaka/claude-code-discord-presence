@@ -68,9 +68,33 @@ function claudeSessionFiles() {
 
 // Ustala PID procesu Claude Code: najpierw rejestr ~/.claude/sessions/<pid>.json,
 // potem drzewo procesów od rodzica hooka.
+// A resumed conversation runs in a new Claude process with the same session id, while the
+// old process's <pid>.json can be left behind (crash, reboot, app restart). Only a live
+// process counts; if several are alive, the most recently started one wins.
 function resolveFromRegistry(sid) {
-  for (const j of claudeSessionFiles()) if (j.sessionId === sid) return { pid: j.pid, startedAt: Number.isFinite(j.startedAt) ? j.startedAt : null, entrypoint: j.entrypoint || null, via: 'claude-sessions', procStart: claudeProcStart(j.procStart) };
-  return null;
+  const live = claudeSessionFiles().filter(j => j.sessionId === sid && pidAlive(j.pid) !== false);
+  if (!live.length) return null;
+  live.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+  const j = live[0];
+  return { pid: j.pid, startedAt: Number.isFinite(j.startedAt) ? j.startedAt : null, entrypoint: j.entrypoint || null, via: 'claude-sessions', procStart: claudeProcStart(j.procStart) };
+}
+
+// The session's process is gone: if the same conversation already runs in another live
+// Claude process (resume), follow it – a new launch, so a new timer – instead of dropping it.
+function rebindOrDrop(s, why) {
+  const r = resolveFromRegistry(s.id);
+  if (r && r.pid !== s.pid) {
+    log('session moved to a new process', s.pid, '->', r.pid, 'session', s.id.slice(0, 8));
+    const oldRun = runs.get(s.runKey);
+    s.pid = r.pid; s.pidVia = r.via; s.entrypoint = r.entrypoint; s.processStart = r.startedAt;
+    s.claudeProcStart = r.procStart; s.procStart = null; s.imageName = null; s.epChecked = false;
+    attachRun(s);
+    if (oldRun) pruneRun(oldRun);
+    forceScan = true;
+    return 'moved';
+  }
+  dropSession(s, why);
+  return 'dropped';
 }
 
 // Claude Code records its own process start ("procStart": ps-style lstart, seen in UTC).
@@ -265,10 +289,7 @@ function checkLiveness() {
       const j = C.readJson(path.join(C.P.claudeSessions, `${s.pid}.json`), null);
       s.entrypoint = j && j.pid === s.pid ? (j.entrypoint || null) : null; changed = true;
     }
-    if (pidAlive(s.pid) === false) {
-      log('process gone', s.pid, 'session', s.id.slice(0, 8));
-      sessions.delete(s.id); const run = runs.get(s.runKey); if (run) pruneRun(run); changed = true;
-    }
+    if (pidAlive(s.pid) === false) { rebindOrDrop(s, 'process gone'); changed = true; }
   }
   if (Date.now() - lastImageCheck > T.imageCheck && sessions.size) {
     lastImageCheck = Date.now();
@@ -310,7 +331,7 @@ function checkStartTimesUnix() {
     for (const s of list) {
       if (!sessions.has(s.id)) continue;
       const st = starts.get(s.pid);
-      if (st === undefined) { dropSession(s, 'process gone'); changed = true; continue; }
+      if (st === undefined) { rebindOrDrop(s, 'process gone'); changed = true; continue; }
       if (st === null) continue;
       if (s.procStart) {
         if (Math.abs(st - s.procStart) > 1500) { dropSession(s, 'pid reused (start time changed)'); changed = true; }

@@ -604,3 +604,38 @@ test('install → reinstall (idempotent) → autostart paths → hook via shell 
   if (launcher) assert.ok(!fs.existsSync(launcher), 'launcher removed');
   assert.ok(fs.readdirSync(path.join(claudeDir, 'backups')).length >= 2, 'backups kept');
 });
+
+test('resumed session in a new Claude process: a stale <pid>.json of the dead process is ignored, a running session follows the new process', { timeout: 60000 }, async () => {
+  await freshStart();
+  const discord = new FakeDiscord(); await discord.start();
+  const repo = path.join(tmp, 'resume-repo'); fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  const tr = path.join(tmp, 'projects', 'rs1.jsonl'); fs.writeFileSync(tr, asst('rs1m', Date.now(), [0, 300, 0, 0]));
+  const sessionsDir = path.join(env.CDP_CLAUDE_DIR, 'sessions');
+
+  // 1) Claude restarted and resumed the conversation: the old process's entry is still there
+  const deadPid = 999990 + Math.floor(Math.random() * 9);
+  const t0 = Date.now() - 600000;
+  fs.writeFileSync(path.join(sessionsDir, `${deadPid}.json`), JSON.stringify({ pid: deadPid, sessionId: 'rs1', startedAt: t0 }));
+  const start1 = Date.now() - 5000;
+  const p1 = fakeClaude('rs1', start1);
+  await hook({ hook_event_name: 'SessionStart', session_id: 'rs1', transcript_path: tr, cwd: repo, source: 'resume' });
+  const a1 = await waitFor(() => { const l = discord.last(); return l && l.activity && l.activity.details === 'Projekt: resume-repo' && l; }, 15000, 'resumed session shown');
+  assert.strictEqual(a1.activity.timestamps.start, start1, 'timer from the live process, not the stale entry');
+  const s1 = sessionsInStatus().find(s => s.id === 'rs1');
+  assert.ok(s1 && s1.pid === p1.pid, `bound to the live process (got ${s1 && s1.pid})`);
+
+  // 2) the conversation is resumed in yet another process while the first one exits
+  const start2 = Date.now();
+  const p2 = fakeClaude('rs1', start2);
+  p1.kill('SIGKILL');
+  const a2 = await waitFor(() => { const l = discord.last(); return l && l.activity && l.activity.timestamps.start === start2 && l; }, 15000, 'followed the new process');
+  assert.strictEqual(a2.activity.details, 'Projekt: resume-repo');
+  assert.ok(sessionsInStatus().some(s => s.id === 'rs1' && s.pid === p2.pid));
+
+  // 3) no live process left for the conversation → closed
+  p2.kill('SIGKILL');
+  await waitFor(() => discord.last().activity === null, 15000, 'cleared');
+  try { fs.rmSync(path.join(sessionsDir, `${deadPid}.json`)); } catch {}
+  await waitFor(async () => !(await daemonAlive()), 15000, 'daemon exits');
+  await discord.stop();
+});

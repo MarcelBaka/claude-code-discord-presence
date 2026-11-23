@@ -44,7 +44,11 @@ function inClaudeRegistry(sid) {
   try {
     for (const n of fs.readdirSync(P.claudeSessions)) {
       if (!/^\d+\.json$/.test(n)) continue;
-      try { if (JSON.parse(fs.readFileSync(path.join(P.claudeSessions, n), 'utf8')).sessionId === sid) return true; } catch {}
+      try {
+        const j = JSON.parse(fs.readFileSync(path.join(P.claudeSessions, n), 'utf8'));
+        // a stale entry left by a dead process (resumed session) does not count
+        if (j.sessionId === sid && j.pid) { try { process.kill(j.pid, 0); return true; } catch (e) { if (e.code === 'EPERM') return true; } }
+      } catch {}
     }
   } catch {}
   return false;

@@ -39,14 +39,18 @@ $docCond = New-Object System.Windows.Automation.PropertyCondition([System.Window
 function Get-AppMode([IntPtr]$hwnd) {
   try {
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
-    $doc = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $docCond)
-    if (-not $doc) { return 'unknown' }
-    $name = [string]$doc.Current.Name
-    $url = ''
-    try { $url = [string]$doc.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value } catch {}
-    if ($name -match ' - Claude Code$' -or $url -match '^https://claude\.ai/(epitaxy|code)\b') { return 'code' }
-    if ($url -match '^https://claude\.ai/' -or $name -match ' - Claude$' -or $name -eq 'Claude') { return 'chat' }
-    return 'unknown'
+    # The window can hold several documents: the app's own shell (file:///…/index.html,
+    # no name) and the claude.ai page. Decide from the claude.ai page; skip the shell.
+    $mode = 'unknown'
+    foreach ($doc in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $docCond)) {
+      $name = [string]$doc.Current.Name
+      $url = ''
+      try { $url = [string]$doc.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value } catch {}
+      if ($url -match '^file:') { continue }
+      if ($name -match ' - Claude Code$' -or $url -match '^https://claude\.ai/(epitaxy|code)\b') { return 'code' }
+      if ($url -match '^https://claude\.ai/' -or $name -match ' - Claude$' -or $name -eq 'Claude') { $mode = 'chat' }
+    }
+    return $mode
   } catch { return 'unknown' }
 }
 
