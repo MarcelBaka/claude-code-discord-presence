@@ -42,18 +42,41 @@ function Get-AppMode([IntPtr]$hwnd) {
     # The window can hold several documents: the app's own shell (file:///…/index.html,
     # no name) and the claude.ai page. Decide from the claude.ai page; skip the shell.
     $mode = 'unknown'
+    $script:appTitle = ''
     foreach ($doc in $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $docCond)) {
       $name = [string]$doc.Current.Name
       $url = ''
       try { $url = [string]$doc.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value } catch {}
       if ($url -match '^file:') { continue }
-      if ($name -match ' - Claude Code$' -or $url -match '^https://claude\.ai/(epitaxy|code)\b') { return 'code' }
+      if ($name -match ' - Claude Code$' -or $url -match '^https://claude\.ai/(epitaxy|code)\b') {
+        # the open session's title: the daemon matches it to Claude's own session names
+        # to show the session you are looking at (kept in memory only, never sent or logged)
+        if ($name -match '^(.+) - Claude Code$') { $script:appTitle = $Matches[1] }
+        return 'code'
+      }
       if ($url -match '^https://claude\.ai/' -or $name -match ' - Claude$' -or $name -eq 'Claude') { $mode = 'chat' }
     }
     return $mode
   } catch { return 'unknown' }
 }
 
+# JSON string with every non-ASCII character escaped – the console encoding then cannot
+# garble Polish (or any other) characters on the way to Node
+function ConvertTo-AsciiJson([string]$s) {
+  $sb = New-Object System.Text.StringBuilder
+  [void]$sb.Append('"')
+  foreach ($ch in $s.ToCharArray()) {
+    $c = [int]$ch
+    if ($ch -eq '"') { [void]$sb.Append('\"') }
+    elseif ($ch -eq '\') { [void]$sb.Append('\\') }
+    elseif ($c -lt 32 -or $c -gt 126) { [void]$sb.Append(('\u{0:x4}' -f $c)) }
+    else { [void]$sb.Append($ch) }
+  }
+  [void]$sb.Append('"')
+  return $sb.ToString()
+}
+
+$script:appTitle = ''
 $parents = @{}
 $appPid = 0
 while ($true) {
@@ -82,7 +105,9 @@ while ($true) {
     $appVisible = $true
     $mode = Get-AppMode $app.MainWindowHandle
   }
-  $json = '{"vis":{' + ($parts -join ',') + '},"app":{"visible":' + $(if ($appVisible) { 'true' } else { 'false' }) + ',"mode":"' + $mode + '"}}'
+  $title = ''
+  if ($appVisible -and $mode -eq 'code' -and $script:appTitle) { $title = ',"title":' + (ConvertTo-AsciiJson $script:appTitle) }
+  $json = '{"vis":{' + ($parts -join ',') + '},"app":{"visible":' + $(if ($appVisible) { 'true' } else { 'false' }) + ',"mode":"' + $mode + '"' + $title + '}}'
   [Console]::Out.WriteLine($json)
   [Console]::Out.Flush()
   Start-Sleep -Milliseconds 1500

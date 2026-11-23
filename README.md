@@ -48,8 +48,8 @@ on Discord** – just the desktop Discord client's local RPC.
 - **`doctor`** – one command that checks the usual reasons nothing shows on Discord and says what to do.
 - **Native Discord timer** counting from when Claude Code was launched; it never resets on updates
   or reconnects.
-- **Multiple sessions** – shows the session you last typed in; switches when one closes, even after
-  a terminal crash.
+- **Multiple sessions** – shows the session open in the Claude desktop app window, or the one you
+  last typed in; switches when one closes, even after a terminal crash.
 - **Claude desktop app aware** – hides when you close the window, shows `Chatting with Claude` in
   the regular chat tab (optionally from sign-in, without a Code session).
 - **Updates** – one command, or automatically (opt-in); the price table refreshes itself daily.
@@ -429,8 +429,13 @@ profile, VS Code is listed first and stays the status under your name. Prefer Cl
   comes back with the same timer when you reopen the window. A minimized window still counts.
 - **Regular chat tab**: the card switches to `Chatting with Claude` with its own timer. Chats have
   no local transcript, so there are no tokens or cost for them.
-- Both are detected by a small PowerShell watcher using the Windows window list and UI Automation.
-  Only the tab type (Code/chat) is used – conversation titles never leave the watcher.
+- **Switching sessions in the app** switches the card at once: the window's title is matched to the
+  session name Claude Code stores in `~/.claude/sessions`. Merely resuming old sessions (clicking
+  through the sidebar, or the app restoring them) does not take the card over; a later prompt in a
+  terminal session still wins over a window left open.
+- All this is detected by a small PowerShell watcher using the Windows window list and UI
+  Automation. The open session's title is used only for that match, kept in memory and never sent
+  to Discord, written to the status file or logged.
 
 **macOS** – a small JavaScript-for-Automation watcher (`osascript`) runs while a desktop-app
 session is open. What can be detected:
@@ -445,8 +450,8 @@ session is open. What can be detected:
 
 The CLI presence never depends on this: a refused permission, a missing watcher or an unknown
 state never hides a session, and the watcher asks at most once (no loops). The tab is never guessed
-from the app merely running. Window titles are read only inside the watcher; only the tab type
-leaves it. Conversation content is never read.
+from the app merely running. The window title is used only to match the open session to Claude's
+session list on your computer; it is never sent, stored or logged. Conversation content is never read.
 
 To enable the extra detection:
 
