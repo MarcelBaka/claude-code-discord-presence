@@ -303,7 +303,10 @@ function handleEvent(ev) {
   if (ev.hookPpid) s.hookPpid = ev.hookPpid;
   if (Array.isArray(ev.ancestors) && ev.ancestors.length) s.ancestors = ev.ancestors.slice(0, 16);
   // aktywność użytkownika: start sesji i wysłanie promptu (nie statusLine, nie zmiana katalogu)
-  if (ev.event === 'SessionStart' || ev.event === 'UserPromptSubmit') s.lastActivity = Math.max(s.lastActivity, ev.at || Date.now());
+  // the desktop app resumes old sessions when you click them (or in the background): that is
+  // not work in them – only a prompt (or a brand-new session) makes a session the shown one
+  const resumedInApp = ev.event === 'SessionStart' && ev.source === 'resume' && (s.entrypoint || (resolveFromRegistry(sid) || {}).entrypoint) === 'claude-desktop';
+  if ((ev.event === 'SessionStart' && !resumedInApp) || ev.event === 'UserPromptSubmit') s.lastActivity = Math.max(s.lastActivity, ev.at || Date.now());
   // Claude's state: working after a prompt, waiting for you after the reply / a notification
   if (ev.event === 'UserPromptSubmit') {
     s.status = 'working'; s.statusSince = ev.at || Date.now(); s.activity = 'thinking'; s.activityAt = s.statusSince;
