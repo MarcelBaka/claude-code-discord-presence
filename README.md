@@ -3,8 +3,7 @@
 [![tests](https://github.com/MarcelBaka/claude-code-discord-presence/actions/workflows/test.yml/badge.svg)](https://github.com/MarcelBaka/claude-code-discord-presence/actions/workflows/test.yml)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Node.js ≥ 18](https://img.shields.io/badge/node-%E2%89%A5%2018-339933.svg)
-![Platform: Windows | macOS](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078D6.svg)
-![Linux: soon](https://img.shields.io/badge/Linux-soon-lightgrey.svg)
+![Platform: Windows | macOS | Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D6.svg)
 ![Dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg)
 
 Show what you are building with **Claude Code** on your Discord profile – the project, whether
@@ -62,7 +61,7 @@ on Discord** – just the desktop Discord client's local RPC.
 
 ## Requirements
 
-- **Windows 10/11**, or **macOS** on Apple Silicon or Intel
+- **Windows 10/11**, **macOS** (Apple Silicon or Intel) or **Linux** (x64 or arm64, a desktop session)
 - The **Discord desktop app** (the browser version has no local RPC)
 - **Claude Code** (CLI or the Claude desktop app's Code tab)
 - **Node.js 18+** (macOS: Node 20+ recommended – from nodejs.org, Homebrew, nvm, fnm, volta…).
@@ -78,7 +77,7 @@ on Discord** – just the desktop Discord client's local RPC.
 | Windows 10/11 x64 | Supported; real Discord and Claude verified by the author; CI: Node 18/20/22 |
 | macOS, Intel (x64) | Supported; verified on macOS 13.7 Intel with a real Discord client – install, project/timer/tokens card, `update` and LaunchAgent autostart; full test suite locally and in CI (`macos-15-intel`, Node 22) |
 | macOS, Apple Silicon (arm64) | Supported; CI `macos-latest` (Node 20/22/24) passes with a fake Discord IPC server; not yet checked with a real Discord on an M-series Mac |
-| Linux | **Coming soon** – the code paths exist (sockets, `ps`, XDG/Flatpak/Snap Discord sockets) but are not tested or supported yet |
+| Linux (x64, arm64) | Supported; CI on Ubuntu (x64: Node 20/22/24, arm64: Node 22) runs the full suite with a fake Discord IPC server, including the Unix-socket, `ps`, installer and autostart tests; not yet checked with a real Discord client on Linux. Discord from the official `.deb`/`.tar.gz`, Flatpak or Snap is found in `$XDG_RUNTIME_DIR` (or its Flatpak/Snap subfolder). There is no Claude desktop app for Linux, so the window/chat features do not apply |
 | WSL | Not supported |
 
 See [`docs/reports`](docs/reports) for exactly what was verified with a real Discord client.
@@ -96,8 +95,11 @@ See [`docs/reports`](docs/reports) for exactly what was verified with a real Dis
   **Open** → **Open**.
 - **Windows:** `claude-code-discord-presence-<version>-windows.zip` → Extract All → double-click
   `install-windows.cmd` (SmartScreen: **More info** → **Run anyway**).
+- **Linux:** `claude-code-discord-presence-<version>-linux.zip` → unzip → in a terminal:
+  `bash install-linux.sh` (or *Run in Terminal* from your file manager).
 
-The installer finds Node (also Homebrew/nvm/volta installs on macOS), asks for a Discord
+The installer finds Node (also Homebrew/nvm/volta/fnm/asdf installs, and distribution or Snap
+packages on Linux), asks for a Discord
 Application ID – **just press Enter** to use the built-in “ClaudeCode” app – installs and optionally
 turns on start at sign-in. The scripts
 are not code-signed; they only run `node install.js` from the unzipped folder.
@@ -310,6 +312,11 @@ By default the background process is started by Claude Code hooks – nothing ru
   is not restarted, and an instance started while one already runs simply exits. `autostart off`
   unloads (`launchctl bootout`) and deletes only this file. The `Chatting with Claude` card is
   Windows-only (see below).
+- **Linux:** writes an XDG autostart entry,
+  `~/.config/autostart/io.github.marcelbaka.claude-code-discord-presence.desktop` (no `sudo`, no
+  systemd unit), which GNOME, KDE Plasma, Xfce, Cinnamon, MATE, LXQt and most other desktops start
+  at login – inside the session, where Discord's socket (`$XDG_RUNTIME_DIR`) is reachable. Paths
+  are quoted per the Desktop Entry spec. `autostart off` deletes only this file.
 
   Check it with:
 
@@ -342,7 +349,8 @@ token and no data about you or your sessions; `update-check off` disables it.
 get tested, released versions; if you already have it, nothing happens (`--force` reinstalls).
 `update --main` takes the unreleased `main` branch, `update 1.0.1` a specific release (also to go
 back). It downloads that version as a ZIP, unpacks it with a system tool
-(the built-in `tar.exe` on Windows 10/11, `ditto` on macOS, `unzip` on Linux – arguments are passed directly,
+(the built-in `tar.exe` on Windows 10/11, `ditto` on macOS; on Linux a small built-in extractor, so
+`unzip` need not be installed – arguments are passed directly,
 never through a shell string), runs its installer and keeps your configuration and Application ID.
 A failed download, unpack or install is reported as a failure (exit code 1) and the temporary files
 are removed either way. From a clone, `git pull` followed by `node install.js` does the same.

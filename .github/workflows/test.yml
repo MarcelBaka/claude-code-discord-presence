@@ -26,6 +26,11 @@ jobs:
           - { os: macos-latest, label: macOS Apple Silicon, arch: arm64, node: 24 }
           # macOS on Intel (x64 image)
           - { os: macos-15-intel, label: macOS Intel, arch: x64, node: 22 }
+          # Linux (Ubuntu x64 and arm64)
+          - { os: ubuntu-latest, label: Linux x64, arch: x64, node: 20 }
+          - { os: ubuntu-latest, label: Linux x64, arch: x64, node: 22 }
+          - { os: ubuntu-latest, label: Linux x64, arch: x64, node: 24 }
+          - { os: ubuntu-24.04-arm, label: Linux arm64, arch: arm64, node: 22 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

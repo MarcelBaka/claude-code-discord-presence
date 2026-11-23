@@ -8,6 +8,9 @@
 //   into the GUI session with launchctl. RunAtLoad only – no KeepAlive, so a process the
 //   user stopped (`cli.js stop`, `disable`) is not restarted, and an instance that finds
 //   another one already running simply exits without being respawned.
+// Linux: an XDG autostart entry, ~/.config/autostart/<LABEL>.desktop – started by the
+//   desktop session at login (GNOME, KDE, Xfce, Cinnamon, MATE, LXQt…); no sudo, no systemd.
+//   Discord's socket lives in the session's XDG_RUNTIME_DIR, which these sessions provide.
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -63,6 +66,33 @@ function plistXml(nodePath, daemonPath) {
   ].join('\n');
 }
 
+// ---------- Linux ----------
+function xdgAutostartDir() {
+  if (process.env.CDP_XDG_AUTOSTART_DIR) return process.env.CDP_XDG_AUTOSTART_DIR;
+  const base = process.env.XDG_CONFIG_HOME && path.isAbsolute(process.env.XDG_CONFIG_HOME) ? process.env.XDG_CONFIG_HOME : path.join(os.homedir(), '.config');
+  return path.join(base, 'autostart');
+}
+
+// Desktop Entry Exec quoting: each argument in double quotes; inside, \" ` $ \\ are
+// backslash-escaped, and % (field codes) is doubled.
+function execArg(s) { return '"' + String(s).replace(/["`$\\]/g, c => '\\' + c).replace(/%/g, '%%') + '"'; }
+
+function desktopEntry(nodePath, daemonPath) {
+  const line = v => String(v).replace(/[\r\n]/g, ' ');
+  return [
+    '[Desktop Entry]',
+    'Type=Application',
+    'Name=Claude Code Discord Presence',
+    'Comment=Discord Rich Presence for Claude Code – background process (remove with: node cli.js autostart off)',
+    `Exec=${line(execArg(nodePath))} ${line(execArg(daemonPath))} --standby`,
+    `Path=${line(path.posix.dirname(daemonPath))}`,
+    'Terminal=false',
+    'NoDisplay=true',
+    'X-GNOME-Autostart-enabled=true',
+    '',
+  ].join('\n');
+}
+
 // launchctl is optional for the file itself (tests set CDP_LAUNCHCTL=none); failures
 // are reported, never thrown past the caller's file changes.
 function launchctl(args) {
@@ -78,6 +108,7 @@ const domain = () => `gui/${typeof process.getuid === 'function' ? process.getui
 function filePath(o) {
   const p = plat(o);
   if (p === 'darwin') return path.join(launchAgentsDir(), `${LABEL}.plist`);
+  if (p === 'linux') return path.join(xdgAutostartDir(), `${LABEL}.desktop`);
   const d = startupDir();
   return d ? path.join(d, FILE_NAME) : null;
 }
@@ -98,7 +129,14 @@ function enable(nodePath, daemonPath, o) {
     enable.lastLaunchctl = r;
     return f;
   }
-  if (!f) throw new Error('autostart is supported on Windows and macOS only');
+  if (p === 'linux') {
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    const tmp = `${f}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, desktopEntry(nodePath, daemonPath), { encoding: 'utf8', mode: 0o644 });
+    fs.renameSync(tmp, f);
+    return f;
+  }
+  if (!f) throw new Error('autostart is supported on Windows, macOS and Linux only');
   const q = s => `""${s.replace(/"/g, '')}""`;
   const vbs = [
     "' Claude Code Discord Presence - starts the background process at sign-in (no window).",
@@ -127,4 +165,4 @@ function disable(o) {
   return false;
 }
 
-module.exports = { FILE_NAME, LABEL, startupDir, launchAgentsDir, plistXml, filePath, isEnabled, enable, disable };
+module.exports = { FILE_NAME, LABEL, startupDir, launchAgentsDir, xdgAutostartDir, plistXml, desktopEntry, execArg, filePath, isEnabled, enable, disable };
