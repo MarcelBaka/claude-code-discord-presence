@@ -349,11 +349,14 @@ function checkImagesWindows() {
 function checkStartTimesUnix() {
   const list = [...sessions.values()].filter(s => s.pid);
   if (!list.length) return;
+  // the PID each session had when ps was asked: by the time the asynchronous result arrives
+  // a session may have moved to a new process (resume) – its result then says nothing about it
+  const queried = new Map(list.map(s => [s, s.pid]));
   proc.startTimes([...new Set(list.map(s => s.pid))], (err, starts) => {
     if (err) { log('ps check failed', err.message); return; }
     let changed = false;
     for (const s of list) {
-      if (!sessions.has(s.id)) continue;
+      if (sessions.get(s.id) !== s || s.pid !== queried.get(s)) continue; // dropped, replaced or rebound meanwhile
       const st = starts.get(s.pid);
       if (st === undefined) { rebindOrDrop(s, 'process gone'); changed = true; continue; }
       if (st === null) continue;
