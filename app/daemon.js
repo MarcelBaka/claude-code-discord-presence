@@ -40,6 +40,8 @@ function maybeRefreshPrices() {
 }
 function maybeCheckForUpdate() {
   maybeRefreshPrices();
+  // tests: a fixed "update available" instead of asking GitHub
+  if (process.env.CDP_FAKE_UPDATE) updateInfo = C.readJson(process.env.CDP_FAKE_UPDATE, null);
   maybeAutoUpdate();
   if (!cfg.checkUpdates || process.env.CDP_NO_UPDATE_CHECK === '1' || updateChecking || Date.now() - updateCheckAt < 3600e3) return;
   updateChecking = true; updateCheckAt = Date.now();
@@ -58,16 +60,22 @@ function maybeCheckForUpdate() {
 const AUTO_FILE = () => path.join(C.P.data, 'state', 'auto-update.json');
 let autoUpdating = false;
 function maybeAutoUpdate() {
-  if (!cfg.autoUpdate || autoUpdating || !updateInfo || !updateInfo.updateAvailable || process.env.CDP_NO_UPDATE_CHECK === '1') return;
-  if ([...sessions.values()].some(s => s.status === 'working')) return; // never in the middle of Claude's work
+  if (!cfg.autoUpdate || autoUpdating || !updateInfo || !updateInfo.updateAvailable) return;
+  if (process.env.CDP_NO_UPDATE_CHECK === '1' && !process.env.CDP_FAKE_UPDATE) return;
+  // never in the middle of Claude's work – judged like the card: an Esc (no Stop hook) or a
+  // stale "working" counts as waiting, so an idle session does not block updates forever
+  if ([...sessions.values()].some(s => effectiveStatus(s) === 'working')) return;
   const last = C.readJson(AUTO_FILE(), {}) || {};
   if (last.version === updateInfo.latest && Date.now() - (last.at || 0) < 24 * 3600e3) return;
   autoUpdating = true;
   try { C.writeJsonAtomic(AUTO_FILE(), { version: updateInfo.latest, at: Date.now() }); } catch {}
   log('auto-update: installing', updateInfo.latest, '(installed', updateInfo.installed + ')');
   const out = fs.openSync(path.join(C.P.logDir, 'auto-update.log'), 'a');
-  const child = require('child_process').spawn(process.execPath, [path.join(C.P.app, 'cli.js'), 'update', '--auto'], { detached: true, stdio: ['ignore', out, out], windowsHide: true, cwd: C.P.data });
+  const child = require('child_process').spawn(process.execPath, [process.env.CDP_AUTO_UPDATE_SCRIPT || path.join(C.P.app, 'cli.js'), 'update', '--auto'], { detached: true, stdio: ['ignore', out, out], windowsHide: true, cwd: C.P.data });
   child.on('error', e => { log('auto-update failed to start', e.message); autoUpdating = false; });
+  // a successful update stops this process (the installer); if we are still here when the
+  // updater exits, it failed – release the latch so it can retry after the daily cooldown
+  child.on('exit', code => { autoUpdating = false; if (code) log('auto-update failed (exit', code + ') – see logs/auto-update.log'); });
   child.unref();
   try { fs.closeSync(out); } catch {}
 }
@@ -529,6 +537,12 @@ function assetUrl(name) {
   const base = String(cfg.assetBaseUrl || '').replace(/\/+$/, '');
   return /^https:\/\//.test(base) ? `${base}/${name}` : null;
 }
+// the state the card would show for this session (Esc and stale "working" → waiting)
+function effectiveStatus(s) {
+  const run = runs.get(s.runKey);
+  return sessionStatus(s, run ? run.usages.get(s.id) || null : null);
+}
+
 function sessionStatus(s, su) {
   let st = s.status || 'waiting';
   if (st === 'working' && su) {

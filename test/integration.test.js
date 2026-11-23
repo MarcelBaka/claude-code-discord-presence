@@ -834,3 +834,53 @@ test('"Get this plugin" button, pause/resume with the same timer, Away after wai
   await waitFor(() => discord.last().activity === null, 15000, 'cleared');
   await discord.stop();
 });
+
+test('auto-update: waits while Claude works (Esc counts as idle), runs the updater once, retries after a failed update', { timeout: 60000 }, async () => {
+  await freshStart();
+  const fakeInfo = path.join(tmp, 'fake-update.json');
+  fs.writeFileSync(fakeInfo, JSON.stringify({ installed: '1.3.0', latest: '9.9.9', updateAvailable: true }));
+  const calls = path.join(tmp, 'updater-calls.txt');
+  try { fs.rmSync(calls); } catch {}
+  const fakeUpdater = path.join(tmp, 'fake-updater.js');
+  // records its arguments and fails like a broken download would
+  fs.writeFileSync(fakeUpdater, `require('fs').appendFileSync(${JSON.stringify(calls)}, process.argv.slice(2).join(' ') + '\\n'); process.exit(3);`);
+  env.CDP_FAKE_UPDATE = fakeInfo; env.CDP_AUTO_UPDATE_SCRIPT = fakeUpdater;
+  const autoFile = path.join(env.CDP_DATA_DIR, 'state', 'auto-update.json');
+  try { fs.rmSync(autoFile); } catch {}
+  const callCount = () => { try { return fs.readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).length; } catch { return 0; } };
+  const discord = new FakeDiscord(); await discord.start();
+  try {
+    const repo = path.join(tmp, 'au-repo'); fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+    const tr = path.join(tmp, 'projects', 'au1.jsonl'); fs.writeFileSync(tr, asst('au1m', Date.now(), [0, 10, 0, 0]));
+    const p = fakeClaude('au1', Date.now() - 1000);
+    const base = { session_id: 'au1', transcript_path: tr, cwd: repo };
+    setCfg({ autoUpdate: false });
+    await hook({ ...base, hook_event_name: 'SessionStart', source: 'startup' });
+    await hook({ ...base, hook_event_name: 'UserPromptSubmit', prompt: 'x', prompt_id: 'U1' });
+    await waitFor(() => sessionsInStatus().some(s => s.id === 'au1'), 15000, 'session tracked');
+    setCfg({ autoUpdate: true });
+    await sleep(2500);
+    assert.strictEqual(callCount(), 0, 'no update while Claude is working');
+
+    // Esc: no Stop hook, an interrupt marker in the transcript → effectively idle → update runs
+    fs.appendFileSync(tr, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] } }) + '\n');
+    await waitFor(() => callCount() === 1, 15000, 'updater started after Esc');
+    assert.strictEqual(fs.readFileSync(calls, 'utf8').trim(), 'update --auto');
+    assert.strictEqual(JSON.parse(fs.readFileSync(autoFile, 'utf8')).version, '9.9.9');
+    await waitFor(() => /auto-update failed \(exit 3\)/.test(logText()), 15000, 'failure logged');
+
+    // the same version is not retried within the cooldown…
+    await sleep(2500);
+    assert.strictEqual(callCount(), 1, 'cooldown respected');
+    // …but the latch was released: once the cooldown is over (record removed), it runs again
+    fs.rmSync(autoFile);
+    await waitFor(() => callCount() === 2, 15000, 'retried after the cooldown');
+
+    p.kill('SIGKILL');
+    await waitFor(() => discord.last() === undefined || discord.last().activity === null, 15000, 'cleared');
+  } finally {
+    setCfg({ autoUpdate: false });
+    delete env.CDP_FAKE_UPDATE; delete env.CDP_AUTO_UPDATE_SCRIPT;
+    await discord.stop();
+  }
+});
