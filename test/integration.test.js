@@ -398,7 +398,13 @@ async function freshStart() {
   setCfg({ enabled: true, checkUpdates: false, autostart: false, showChat: false, showStatus: false, showModel: false, showToday: 'off', language: 'pl' });
   for (const p of procs) { try { p.kill('SIGKILL'); } catch {} }
   if (await daemonAlive()) {
-    await new Promise(r => { const s = net.createConnection(env.CDP_PIPE_NAME); s.on('connect', () => s.end('stop\n')); s.on('close', r); s.on('error', r); });
+    // read the reply (an unread, paused socket never emits 'close') and never wait forever
+    await new Promise(r => {
+      const s = net.createConnection(env.CDP_PIPE_NAME);
+      const t = setTimeout(() => { s.destroy(); r(); }, 3000);
+      const done = () => { clearTimeout(t); r(); };
+      s.on('connect', () => s.end('stop\n')); s.on('data', () => {}); s.on('close', done); s.on('error', done);
+    });
     await waitFor(async () => !(await daemonAlive()), 10000, 'previous daemon stopped');
   }
 }
@@ -716,4 +722,62 @@ test('macOS/Linux: a slow ps result for the old PID does not drop a session that
     delete env.CDP_PS;
     await discord.stop();
   }
+});
+
+test('late async PreToolUse (started before Stop, stdin delayed until after it) never reopens the ended turn; a new prompt id does', { timeout: 60000 }, async () => {
+  await freshStart();
+  setCfg({ language: 'en', showStatus: true, showActivity: true, largeImageKey: 'none' });
+  const discord = new FakeDiscord(); await discord.start();
+  const repo = path.join(tmp, 'late-repo'); fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  const tr = path.join(tmp, 'projects', 'late1.jsonl'); fs.writeFileSync(tr, asst('late1m', Date.now(), [0, 100, 0, 0]));
+  const p = fakeClaude('late1', Date.now() - 1000);
+  const base = { session_id: 'late1', transcript_path: tr, cwd: repo };
+  const last = () => discord.last() && discord.last().activity;
+  const stateIs = (prefix, what) => waitFor(() => { const a = last(); return a && a.state && a.state.startsWith(prefix) && a; }, 15000, what);
+  const registryOf = () => { try { return JSON.parse(fs.readFileSync(path.join(env.CDP_DATA_DIR, 'state', 'registry.json'), 'utf8')).sessions.find(s => s.id === 'late1'); } catch { return null; } };
+
+  await hook({ ...base, hook_event_name: 'SessionStart', source: 'startup' });
+  await hook({ ...base, hook_event_name: 'UserPromptSubmit', prompt: 'x', prompt_id: 'P1' });
+  await stateIs('Thinking · ', 'Thinking');
+
+  // the tool hook process starts first, but its stdin only arrives after Stop has finished
+  const late = spawn(process.execPath, [path.join(APP, 'hook.js'), 'PreToolUse'], { env, stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true });
+  late.stdin.on('error', () => {});
+  const lateDone = new Promise(r => late.on('close', r));
+  await sleep(300);
+  // Stop runs to completion first (its event is recorded first), then the late hook gets its
+  // input – within the hook's own 4 s limit – and records a NEWER time stamp than Stop
+  await hook({ ...base, hook_event_name: 'Stop', prompt_id: 'P1' });
+  late.stdin.end(JSON.stringify({ ...base, hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: {}, prompt_id: 'P1' }));
+  await lateDone;
+  await stateIs('Waiting · ', 'Waiting after Stop');
+  await sleep(2000);
+  assert.ok(last().state.startsWith('Waiting · '), `late hook of the ended turn reopened it: ${last().state}`);
+  assert.strictEqual(registryOf().status, 'waiting');
+
+  // no prompt id (older Claude Code): cannot tell, so it does not reopen either
+  await hook({ ...base, hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: {} });
+  await sleep(1500);
+  assert.ok(last().state.startsWith('Waiting · '), 'no prompt id → stays waiting');
+
+  // Claude continues on its own with a new prompt id → working again
+  await hook({ ...base, hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: {}, prompt_id: 'P2' });
+  await stateIs('Reading code · ', 'new prompt reopens');
+
+  // a permission prompt pauses the turn; the same prompt's next tool resumes it
+  await hook({ ...base, hook_event_name: 'Notification', message: 'needs permission', prompt_id: 'P2' });
+  await stateIs('Waiting · ', 'Waiting on Notification');
+  await hook({ ...base, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {}, prompt_id: 'P2' });
+  await stateIs('Running commands · ', 'resumed after permission');
+
+  // while working on a new prompt, a late hook of an older prompt does not change the activity
+  await hook({ ...base, hook_event_name: 'UserPromptSubmit', prompt: 'y', prompt_id: 'P3' });
+  await stateIs('Thinking · ', 'Thinking P3');
+  await hook({ ...base, hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: {}, prompt_id: 'P2' });
+  await sleep(1500);
+  assert.ok(last().state.startsWith('Thinking · '), `older prompt changed the activity: ${last().state}`);
+
+  p.kill('SIGKILL');
+  await waitFor(() => discord.last().activity === null, 15000, 'cleared');
+  await discord.stop();
 });

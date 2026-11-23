@@ -193,7 +193,7 @@ function saveRegistry() {
   const data = {
     sessions: [...sessions.values()].map(s => ({
       id: s.id, pid: s.pid, pidVia: s.pidVia, imageName: s.imageName || null, transcriptPath: s.transcriptPath, cwd: s.cwd,
-      projectRoot: s.projectRoot, lastActivity: s.lastActivity, firstSeen: s.firstSeen, processStart: s.processStart, procStart: s.procStart || null, claudeProcStart: s.claudeProcStart || null, hookPpid: s.hookPpid, entrypoint: s.entrypoint || null, status: s.status || null, statusSince: s.statusSince || null, activity: s.activity || null, activityAt: s.activityAt || null,
+      projectRoot: s.projectRoot, lastActivity: s.lastActivity, firstSeen: s.firstSeen, processStart: s.processStart, procStart: s.procStart || null, claudeProcStart: s.claudeProcStart || null, hookPpid: s.hookPpid, entrypoint: s.entrypoint || null, status: s.status || null, statusSince: s.statusSince || null, activity: s.activity || null, activityAt: s.activityAt || null, promptId: s.promptId || null, endedPromptId: s.endedPromptId || null,
     })),
     runs: [...runs.values()].map(r => ({ key: r.key, start: r.start, sids: [...r.usages.keys()] })),
   };
@@ -253,16 +253,31 @@ function handleEvent(ev) {
   // aktywność użytkownika: start sesji i wysłanie promptu (nie statusLine, nie zmiana katalogu)
   if (ev.event === 'SessionStart' || ev.event === 'UserPromptSubmit') s.lastActivity = Math.max(s.lastActivity, ev.at || Date.now());
   // Claude's state: working after a prompt, waiting for you after the reply / a notification
-  if (ev.event === 'UserPromptSubmit') { s.status = 'working'; s.statusSince = ev.at || Date.now(); s.activity = 'thinking'; s.activityAt = s.statusSince; }
+  if (ev.event === 'UserPromptSubmit') {
+    s.status = 'working'; s.statusSince = ev.at || Date.now(); s.activity = 'thinking'; s.activityAt = s.statusSince;
+    s.promptId = ev.promptId || null;
+  }
   else if (ev.event === 'PreToolUse') {
-    // a tool call means Claude is working; ignore a late async hook from before the reply ended
+    // PreToolUse is async: it can arrive after the turn's Stop, and its `at` is taken late
+    // (after reading stdin), so time stamps cannot order it. The prompt id can:
+    //  - working: update the activity unless the event belongs to an older prompt
+    //  - waiting: reopen only for a prompt that has not ended (e.g. Claude continuing on its
+    //    own with a new prompt id, or after a permission prompt); a late hook of the ended
+    //    turn – or one without a prompt id (older Claude Code) – never reopens it
     const at = ev.at || Date.now();
-    if (!(s.status === 'waiting' && at <= (s.statusSince || 0))) {
-      if (s.status !== 'working') { s.status = 'working'; s.statusSince = at; }
-      if (ev.tool && at >= (s.activityAt || 0)) { s.activity = ev.tool; s.activityAt = at; }
+    const pid = ev.promptId || null;
+    if (s.status === 'working') {
+      if (ev.tool && !(pid && s.promptId && pid !== s.promptId)) { s.activity = ev.tool; s.activityAt = at; }
+    } else if (pid && pid !== s.endedPromptId) {
+      s.status = 'working'; s.statusSince = at; s.promptId = pid;
+      if (ev.tool) { s.activity = ev.tool; s.activityAt = at; }
     }
   }
-  else if (['Stop', 'StopFailure', 'Notification', 'SessionStart'].includes(ev.event)) { s.status = 'waiting'; s.statusSince = ev.at || Date.now(); s.activity = null; }
+  else if (['Stop', 'StopFailure', 'Notification', 'SessionStart'].includes(ev.event)) {
+    s.status = 'waiting'; s.statusSince = ev.at || Date.now(); s.activity = null;
+    // the turn is over (a Notification only pauses it, e.g. for a permission prompt)
+    if (ev.event === 'Stop' || ev.event === 'StopFailure') s.endedPromptId = ev.promptId || s.promptId || null;
+  }
   if (!s.pid) {
     const r = resolveFromRegistry(sid);
     if (r) { s.pid = r.pid; s.pidVia = r.via; s.processStart = r.startedAt; s.entrypoint = r.entrypoint; s.claudeProcStart = r.procStart; }
