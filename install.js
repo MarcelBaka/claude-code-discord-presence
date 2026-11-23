@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 // Instalator (idempotentny). Użycie: node install.js [--app-id <ID>]
+// Without --app-id the built-in "ClaudeCode" Discord application is used (or the ID you saved before).
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -87,7 +88,7 @@ function stopDaemon(dir) {
   if (bak) console.log(`  backup:  ${bak}`);
   if (wasRunning) console.log('  stopped the previous background process (the new version starts on the next Claude event)');
   const cliCmd = process.platform === 'win32' ? `node "${path.join(DEST, 'cli.js')}"` : `${S.shQuote(NODE)} ${S.shQuote(path.join(DEST, 'cli.js'))}`;
-  if (!merged.applicationId) console.log(`\nApplication ID MISSING – see README, then: ${cliCmd} set-app-id <ID>`);
+  if (!merged.applicationId) console.log(`  discord: built-in "ClaudeCode" application – nothing to set up (your own: ${cliCmd} set-app-id <ID>)`);
   console.log(`Diagnostics: ${cliCmd} status`);
   console.log('\nRestart open Claude Code sessions so they load the new hooks.');
 })();

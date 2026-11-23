@@ -29,27 +29,30 @@ if not defined CFGDIR set "CFGDIR=%USERPROFILE%\.claude\discord-presence"
 set "SAVED="
 for /f "delims=" %%A in ('call "%NODE%" -e "try{process.stdout.write(String(require(process.argv[1]).applicationId||''))}catch{}" "%CFGDIR%\config.json" 2^>nul') do set "SAVED=%%A"
 echo.
-echo Discord Application ID - Developer Portal, your application, General Information.
-if defined SAVED echo Press Enter to keep the saved one (%SAVED%).
+echo Discord application: just press Enter to use the built-in "ClaudeCode" app - nothing to set up.
+echo Or paste the Application ID of your own app (Developer Portal, General Information).
+if defined SAVED echo Enter keeps your saved Application ID (%SAVED%).
 
 set /a TRIES=0
 :ask
 set /a TRIES+=1
 set "APPID="
-set /p "APPID=Application ID: "
-if not defined APPID if defined SAVED set "APPID=%SAVED%"
-if not defined APPID goto :bad
+set /p "APPID=Application ID (Enter = default): "
+if not defined APPID goto :install
 "%NODE%" -e "process.exit(/^\d{15,22}$/.test(process.argv[1].trim()) ? 0 : 1)" "%APPID%"
 if not errorlevel 1 goto :install
-:bad
-echo That does not look like an Application ID (a 17-20 digit number).
+echo That does not look like an Application ID (a 17-20 digit number). Press Enter for the default.
 if %TRIES% lss 3 goto :ask
 echo No valid Application ID - nothing was installed.
 goto :fail
 
 :install
 echo.
-"%NODE%" install.js --app-id "%APPID%"
+if defined APPID (
+  "%NODE%" install.js --app-id "%APPID%"
+) else (
+  "%NODE%" install.js
+)
 if errorlevel 1 (
   echo.
   echo Installation failed - see the messages above.

@@ -554,8 +554,15 @@ test('installer (macOS .command): invalid ID re-asked, install, autostart, re-ru
   assert.ok(fs.existsSync(path.join(home, 'LaunchAgents', 'io.github.marcelbaka.claude-code-discord-presence.plist')), 'autostart answered y');
   r = spawnSync('/bin/bash', [path.join(dir, 'install-macos.command')], { env, input: '\nn\n', encoding: 'utf8' });
   assert.strictEqual(r.status, 0, r.stdout + r.stderr);
-  assert.match(r.stdout, /keep the saved one \(123456789012345678\)/);
+  assert.match(r.stdout, /Enter keeps your saved Application ID \(123456789012345678\)/);
   assert.match(r.stdout, /unchanged/);
+  // a fresh install with just Enter: the built-in application, nothing to set up
+  const home2 = path.join(tmp, 'inst home default mac'); fs.mkdirSync(path.join(home2, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(home2, '.claude', 'settings.json'), '{"theme":"dark"}');
+  r = spawnSync('/bin/bash', [path.join(dir, 'install-macos.command')], { env: { ...sandboxEnv(home2), PATH: env.PATH }, input: '\nn\n', encoding: 'utf8' });
+  assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /built-in "ClaudeCode" application/);
+  checkInstalled(home2, '');
   r = spawnSync('/bin/bash', [path.join(dir, 'install-macos.command')], { env: { ...env, PATH: '/usr/bin:/bin', HOME: path.join(tmp, 'no-node-home') }, input: '', encoding: 'utf8' });
   if (!fs.existsSync('/usr/local/bin/node') && !fs.existsSync('/opt/homebrew/bin/node')) { assert.strictEqual(r.status, 1); assert.match(r.stdout, /Node\.js was not found/); }
 });
@@ -577,6 +584,17 @@ test('installer (Windows .cmd): invalid ID re-asked, install, autostart', { skip
   assert.match(r.stdout, /does not look like an Application ID/);
   checkInstalled(home, '123456789012345678');
   assert.ok(fs.existsSync(path.join(home, 'Startup', 'Claude Code Discord Presence.vbs')), 'autostart answered y');
+  // a fresh install with just Enter: the built-in application, nothing to set up
+  const home2 = path.join(tmp, 'inst home default win'); fs.mkdirSync(path.join(home2, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(home2, '.claude', 'settings.json'), '{"theme":"dark"}');
+  const input2 = path.join(tmp, 'win-input-default.txt');
+  fs.writeFileSync(input2, '\r\nn\r\n');
+  const fd2 = fs.openSync(input2, 'r');
+  try { r = spawnSync('cmd.exe', ['/d', '/c', path.join(dir, 'install-windows.cmd')], { cwd: dir, env: sandboxEnv(home2), stdio: [fd2, 'pipe', 'pipe'], encoding: 'utf8' }); } finally { fs.closeSync(fd2); }
+  assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /built-in "ClaudeCode" application/);
+  checkInstalled(home2, '');
+  assert.ok(!fs.existsSync(path.join(home2, 'Startup', 'Claude Code Discord Presence.vbs')), 'autostart answered n');
 });
 
 test('macOS watcher: a plain "Claude" window title is never reported as the chat tab', () => {
@@ -654,4 +672,33 @@ test('updater: latest release by tag, already up to date, explicit version, --ma
   const r = await update({ repo: 'o/r', appDir: '/x', installed: '1.4.2', latest, log, fetch: async () => { throw new Error('must not download'); } });
   assert.deepStrictEqual(r, { status: 'current' });
   await assert.rejects(update({ repo: 'o/r', appDir: '/x', ref: '7.7.7', latest, log, fetch: async () => { throw new Error('HTTP 404 for x'); } }), /No release v7\.7\.7/);
+});
+
+test('application id: built-in by default, your own wins, invalid ignored, set-app-id default', () => {
+  const { spawnSync } = require('child_process');
+  const data = path.join(tmp, 'appid-data'); fs.mkdirSync(data, { recursive: true });
+  const cfgFile = path.join(data, 'config.json');
+  const load = () => {
+    const r = spawnSync(process.execPath, ['-e', "const c=require(process.argv[1]).loadConfig();process.stdout.write(JSON.stringify([c.applicationId,c.applicationIdIsDefault,c.customApplicationId]))", path.join(__dirname, '..', 'app', 'lib', 'common.js')], { env: { ...process.env, CDP_DATA_DIR: data, CDP_DEFAULT_APP_ID: '' }, encoding: 'utf8' });
+    return JSON.parse(r.stdout);
+  };
+  const { DEFAULT_APPLICATION_ID } = require('../app/lib/common');
+  assert.match(DEFAULT_APPLICATION_ID, /^\d{17,20}$/);
+  fs.writeFileSync(cfgFile, '{}');
+  assert.deepStrictEqual(load(), [DEFAULT_APPLICATION_ID, true, '']);
+  fs.writeFileSync(cfgFile, JSON.stringify({ applicationId: '' }));
+  assert.deepStrictEqual(load(), [DEFAULT_APPLICATION_ID, true, '']);
+  fs.writeFileSync(cfgFile, JSON.stringify({ applicationId: ' 123456789012345678 ' }));
+  assert.deepStrictEqual(load(), ['123456789012345678', false, '123456789012345678']);
+  fs.writeFileSync(cfgFile, JSON.stringify({ applicationId: 'not-an-id' }));
+  assert.deepStrictEqual(load(), [DEFAULT_APPLICATION_ID, true, ''], 'an invalid value falls back to the built-in app');
+
+  const cli = (...a) => spawnSync(process.execPath, [path.join(__dirname, '..', 'app', 'cli.js'), ...a], { env: { ...process.env, CDP_DATA_DIR: data }, encoding: 'utf8' });
+  assert.strictEqual(cli('set-app-id', '123456789012345678').status, 0);
+  assert.strictEqual(JSON.parse(fs.readFileSync(cfgFile, 'utf8')).applicationId, '123456789012345678');
+  const d = cli('set-app-id', 'default');
+  assert.strictEqual(d.status, 0);
+  assert.match(d.stdout, /built-in "ClaudeCode"/);
+  assert.strictEqual(JSON.parse(fs.readFileSync(cfgFile, 'utf8')).applicationId, '');
+  assert.notStrictEqual(cli('set-app-id', 'abc').status, 0);
 });
