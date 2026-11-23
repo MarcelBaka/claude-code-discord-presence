@@ -4,6 +4,7 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Node.js ≥ 18](https://img.shields.io/badge/node-%E2%89%A5%2018-339933.svg)
 ![Platform: Windows | macOS](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078D6.svg)
+![Linux: soon](https://img.shields.io/badge/Linux-soon-lightgrey.svg)
 ![Dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg)
 
 Show what you are building with **Claude Code** on your Discord profile – the project, whether
@@ -65,7 +66,7 @@ Discord client's local RPC and your own public Application ID.
 | Windows 10/11 x64 | Supported; real Discord and Claude verified by the author; CI: Node 18/20/22 |
 | macOS, Intel (x64) | Supported; verified on macOS 13.7 Intel with a real Discord client – install, project/timer/tokens card, `update` and LaunchAgent autostart; full test suite locally and in CI (`macos-15-intel`, Node 22) |
 | macOS, Apple Silicon (arm64) | Supported; CI `macos-latest` (Node 20/22/24) passes with a fake Discord IPC server; not yet checked with a real Discord on an M-series Mac |
-| Linux | Code paths exist (sockets, `ps`, XDG/Flatpak/Snap Discord sockets) but are not tested |
+| Linux | **Coming soon** – the code paths exist (sockets, `ps`, XDG/Flatpak/Snap Discord sockets) but are not tested or supported yet |
 | WSL | Not supported |
 
 See [`docs/reports`](docs/reports) for exactly what was verified with a real Discord client.
