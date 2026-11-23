@@ -202,7 +202,7 @@ test('pełny scenariusz: start, duplikaty, tokeny, wiele projektów, awaria, Dis
 
   await t.test('Stop (koniec odpowiedzi) i długa bezczynność nie zamykają sesji', async () => {
     await sleep(3500); // > grace w trybie testowym
-    assert.ok(await daemonAlive());
+    await waitFor(daemonAlive, 8000, 'process still running');
     assert.ok(discord.last().activity);
   });
 
@@ -275,7 +275,7 @@ test('zamknięcie okna aplikacji Claude desktop → aktywność ukryta, ponowne 
   fs.writeFileSync(winFile, JSON.stringify({ [p.pid]: false }));
   await waitFor(() => discord.last().activity === null, 15000, 'ukryta po zamknięciu okna');
   await sleep(3500); // dłużej niż grace – proces nie może się zakończyć, sesja dalej żyje
-  assert.ok(await daemonAlive());
+  await waitFor(daemonAlive, 8000, 'process still running');
   fs.writeFileSync(winFile, JSON.stringify({ [p.pid]: true }));
   const a = await waitFor(() => { const l = discord.last(); return l.activity && l; }, 15000, 'wraca po otwarciu okna');
   assert.strictEqual(a.activity.timestamps.start, start);
@@ -316,8 +316,11 @@ test('przełączenie na zwykły czat Claude → aktywność czatu; powrót do Co
   setWin('chat');
   p.kill('SIGKILL');
   await waitFor(() => { const l = discord.last(); return l.activity && l.activity.details === 'Rozmawia z Claude'; }, 15000, 'czat po zamknięciu sesji');
+  const logBefore = logText().length;
   await sleep(3500);
-  assert.ok(await daemonAlive(), 'czat utrzymuje proces');
+  // a busy CI machine can miss one 1.5 s ping – what matters is that the process did not exit
+  assert.ok(!/shutdown: no open sessions/.test(logText().slice(logBefore)), 'czat utrzymuje proces (no shutdown logged)');
+  await waitFor(daemonAlive, 8000, 'czat utrzymuje proces');
   // okno zamknięte → aktywność znika, proces się kończy
   setWin('chat', false);
   await waitFor(() => discord.last().activity === null, 15000, 'wyczyszczenie po zamknięciu okna');
@@ -380,7 +383,7 @@ test('stan Claude (Working/Waiting, Esc), model i effort, ikonki stanu, przycisk
   p.kill('SIGKILL');
   await waitFor(() => discord.last().activity === null, 15000, 'cleared');
   await sleep(3500);
-  assert.ok(await daemonAlive(), 'standby keeps the process');
+  await waitFor(daemonAlive, 8000, 'standby keeps the process');
   fs.writeFileSync(cfgFile, JSON.stringify({ ...base, enabled: false }));
   await waitFor(async () => !(await daemonAlive()), 15000, 'stopped');
   await discord.stop();
@@ -808,7 +811,7 @@ test('"Get this plugin" button, pause/resume with the same timer, Away after wai
   setCfg({ pausedUntil: Date.now() + 3600e3 });
   await waitFor(() => discord.last().activity === null, 15000, 'paused');
   await sleep(3500);
-  assert.ok(await daemonAlive(), 'pause does not stop the process');
+  await waitFor(daemonAlive, 8000, 'pause does not stop the process');
   assert.strictEqual(discord.last().activity, null);
   assert.ok(status().paused, 'status says paused');
   // Discord restarts while paused: the new connection gets an explicit clear, not the old card
