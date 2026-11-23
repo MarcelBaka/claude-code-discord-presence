@@ -3,7 +3,8 @@
 [![tests](https://github.com/MarcelBaka/claude-code-discord-presence/actions/workflows/test.yml/badge.svg)](https://github.com/MarcelBaka/claude-code-discord-presence/actions/workflows/test.yml)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Node.js ≥ 18](https://img.shields.io/badge/node-%E2%89%A5%2018-339933.svg)
-![Platform: Windows | macOS | Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D6.svg)
+![Platform: Windows | macOS](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078D6.svg)
+![Linux: experimental](https://img.shields.io/badge/Linux-experimental-orange.svg)
 ![Dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg)
 
 Show what you are building with **Claude Code** on your Discord profile – the project, whether
@@ -61,7 +62,8 @@ on Discord** – just the desktop Discord client's local RPC.
 
 ## Requirements
 
-- **Windows 10/11**, **macOS** (Apple Silicon or Intel) or **Linux** (x64 or arm64, a desktop session)
+- **Windows 10/11**, **macOS** (Apple Silicon or Intel), or **Linux** (x64 or arm64, a desktop
+  session) – ⚠️ **Linux support is experimental for now**, see [Platform support](#platform-support)
 - The **Discord desktop app** (the browser version has no local RPC)
 - **Claude Code** (CLI or the Claude desktop app's Code tab)
 - **Node.js 18+** (macOS: Node 20+ recommended – from nodejs.org, Homebrew, nvm, fnm, volta…).
@@ -77,7 +79,7 @@ on Discord** – just the desktop Discord client's local RPC.
 | Windows 10/11 x64 | Supported; real Discord and Claude verified by the author; CI: Node 18/20/22 |
 | macOS, Intel (x64) | Supported; verified on macOS 13.7 Intel with a real Discord client – install, project/timer/tokens card, `update` and LaunchAgent autostart; full test suite locally and in CI (`macos-15-intel`, Node 22) |
 | macOS, Apple Silicon (arm64) | Supported; CI `macos-latest` (Node 20/22/24) passes with a fake Discord IPC server; not yet checked with a real Discord on an M-series Mac |
-| Linux (x64, arm64) | Supported; CI on Ubuntu (x64: Node 20/22/24, arm64: Node 22) runs the full suite with a fake Discord IPC server, including the Unix-socket, `ps`, installer and autostart tests; not yet checked with a real Discord client on Linux. Discord from the official `.deb`/`.tar.gz`, Flatpak or Snap is found in `$XDG_RUNTIME_DIR` (or its Flatpak/Snap subfolder). There is no Claude desktop app for Linux, so the window/chat features do not apply |
+| Linux (x64, arm64) | ⚠️ **Experimental – may be unstable.** Not yet tried with a real Discord client or a real Linux desktop: CI on Ubuntu (x64: Node 20/22/24, arm64: Node 22) runs the full suite with a fake Discord IPC server, including the Unix-socket, `ps`, installer and autostart tests; not yet checked with a real Discord client on Linux. Discord from the official `.deb`/`.tar.gz`, Flatpak or Snap is found in `$XDG_RUNTIME_DIR` (or its Flatpak/Snap subfolder). There is no Claude desktop app for Linux, so the window/chat features do not apply |
 | WSL | Not supported |
 
 See [`docs/reports`](docs/reports) for exactly what was verified with a real Discord client.
@@ -95,8 +97,15 @@ See [`docs/reports`](docs/reports) for exactly what was verified with a real Dis
   **Open** → **Open**.
 - **Windows:** `claude-code-discord-presence-<version>-windows.zip` → Extract All → double-click
   `install-windows.cmd` (SmartScreen: **More info** → **Run anyway**).
-- **Linux:** `claude-code-discord-presence-<version>-linux.zip` → unzip → in a terminal:
-  `bash install-linux.sh` (or *Run in Terminal* from your file manager).
+- **Linux (experimental):** `claude-code-discord-presence-<version>-linux.zip` → unzip → in a
+  terminal: `bash install-linux.sh` (or *Run in Terminal* from your file manager).
+
+> [!WARNING]
+> **Linux support is experimental.** It passes the automated tests on Ubuntu (x64 and arm64), but
+> it has not been used with a real Discord client on a Linux desktop yet, so expect rough edges.
+> If something does not work, run `node ~/.claude/discord-presence/cli.js doctor` and
+> [open an issue](https://github.com/MarcelBaka/claude-code-discord-presence/issues) with its
+> output (it contains no prompts or file contents) – reports from Linux users are very welcome.
 
 The installer finds Node (also Homebrew/nvm/volta/fnm/asdf installs, and distribution or Snap
 packages on Linux), asks for a Discord
@@ -557,6 +566,8 @@ so `cli.js version` and the update check always agree with the published release
 
 ### Known limitations
 
+- **Linux is experimental:** not yet verified with a real Discord client or desktop session
+  (distribution, desktop environment, Flatpak/Snap Discord); only the CI test suite covers it.
 - The model call made by `/compact` itself is not in the transcript, so it is not counted.
 - Without `autostart on`, opening the desktop app straight into a chat shows nothing until the
   first Claude Code event.
