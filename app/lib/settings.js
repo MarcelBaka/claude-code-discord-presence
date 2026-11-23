@@ -5,7 +5,10 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const EVENTS = ['SessionStart', 'UserPromptSubmit', 'Stop', 'Notification', 'CwdChanged', 'SessionEnd'];
+const EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'Stop', 'Notification', 'CwdChanged', 'SessionEnd'];
+// PreToolUse runs before every tool call: async, so Claude never waits for it
+// (Claude Code versions without "async" just run it normally – it exits in ~0.1 s).
+const ASYNC_EVENTS = new Set(['PreToolUse']);
 const MARKER = /discord-presence[\\/]+hook\.js/i;
 
 function settingsPath() { return process.env.CDP_SETTINGS || path.join(os.homedir(), '.claude', 'settings.json'); }
@@ -79,7 +82,9 @@ function addOurs(data, nodePath, hookPath, platform = process.platform) {
   out.hooks = out.hooks && typeof out.hooks === 'object' ? out.hooks : {};
   for (const ev of EVENTS) {
     if (!Array.isArray(out.hooks[ev])) out.hooks[ev] = [];
-    out.hooks[ev].push({ hooks: [{ type: 'command', command: commandFor(nodePath, hookPath, ev, platform), timeout: 10 }] });
+    const h = { type: 'command', command: commandFor(nodePath, hookPath, ev, platform), timeout: 10 };
+    if (ASYNC_EVENTS.has(ev)) h.async = true;
+    out.hooks[ev].push({ hooks: [h] });
   }
   return out;
 }

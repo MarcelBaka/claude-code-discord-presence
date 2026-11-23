@@ -73,6 +73,8 @@ const DEFAULT_CONFIG = {
   activityType: 'watching',
   showChat: true,
   showStatus: true,
+  showActivity: true,
+  checkUpdates: true,
   showModel: true,
   showToday: 'rotate',
   links: {},
@@ -158,8 +160,8 @@ function formatTokens(n, lang = 'pl') {
 }
 
 const STRINGS = {
-  en: { project: 'Project', hidden: 'Project hidden', sessionTokens: 'Session tokens', convTokens: 'Conversation tokens', noData: 'Tokens: no data', sessions: 'sessions', chat: 'Chatting with Claude', working: 'Working', waiting: 'Waiting', workingLong: 'Claude is working…', waitingLong: 'Waiting for you', tokensWord: 'tokens', today: 'Today', effort: 'effort', githubButton: 'View on GitHub', openButton: 'Open project' },
-  pl: { project: 'Projekt', hidden: 'Projekt ukryty', sessionTokens: 'Tokeny sesji', convTokens: 'Tokeny rozmowy', noData: 'Tokeny: brak danych', sessions: 'sesje', chat: 'Rozmawia z Claude', working: 'Pracuje', waiting: 'Czeka', workingLong: 'Claude pracuje…', waitingLong: 'Czeka na Ciebie', tokensWord: 'tokenów', today: 'Dziś', effort: 'effort', githubButton: 'Zobacz na GitHubie', openButton: 'Otwórz projekt' },
+  en: { project: 'Project', hidden: 'Project hidden', sessionTokens: 'Session tokens', convTokens: 'Conversation tokens', noData: 'Tokens: no data', sessions: 'sessions', chat: 'Chatting with Claude', working: 'Working', waiting: 'Waiting', workingLong: 'Claude is working…', waitingLong: 'Waiting for you', tokensWord: 'tokens', today: 'Today', effort: 'effort', githubButton: 'View on GitHub', openButton: 'Open project', activity: { thinking: 'Thinking', edit: 'Editing files', read: 'Reading code', run: 'Running commands', web: 'Browsing the web', agent: 'Running agents', plan: 'Planning', tool: 'Using tools' } },
+  pl: { project: 'Projekt', hidden: 'Projekt ukryty', sessionTokens: 'Tokeny sesji', convTokens: 'Tokeny rozmowy', noData: 'Tokeny: brak danych', sessions: 'sesje', chat: 'Rozmawia z Claude', working: 'Pracuje', waiting: 'Czeka', workingLong: 'Claude pracuje…', waitingLong: 'Czeka na Ciebie', tokensWord: 'tokenów', today: 'Dziś', effort: 'effort', githubButton: 'Zobacz na GitHubie', openButton: 'Otwórz projekt', activity: { thinking: 'Myśli', edit: 'Edytuje pliki', read: 'Czyta kod', run: 'Uruchamia polecenia', web: 'Przegląda sieć', agent: 'Uruchamia agentów', plan: 'Planuje', tool: 'Używa narzędzi' } },
 };
 function strings(lang) { return STRINGS[lang] || STRINGS.en; }
 

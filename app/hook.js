@@ -71,6 +71,8 @@ function startDaemon() {
     try { input = JSON.parse(raw || '{}'); } catch { input = {}; }
     const event = input.hook_event_name || process.argv[2] || 'unknown';
     if (!input.session_id) return done();
+    // PreToolUse fires on every tool call: skip all work when the activity line is off
+    if (event === 'PreToolUse' && cfg.showActivity === false) return done();
 
     let projectRoot = null;
     const cwd = event === 'CwdChanged' ? (input.new_cwd || input.cwd) : input.cwd;
@@ -95,6 +97,11 @@ function startDaemon() {
       reason: input.reason || null,
       hookPpid: process.ppid,
       ancestors,
+      // PreToolUse: only the category of the tool (edit/read/run/…), never its input
+      tool: event === 'PreToolUse' ? require('./lib/activity').categorize(input.tool_name) : undefined,
+      // which prompt (turn) the event belongs to – lets the daemon ignore a late async
+      // PreToolUse from a turn that already ended (its `at` is taken late, after stdin)
+      promptId: typeof input.prompt_id === 'string' ? input.prompt_id : null,
       at: Date.now(),
     };
 

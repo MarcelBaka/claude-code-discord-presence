@@ -1,12 +1,13 @@
 'use strict';
-// `cli.js update`: download the repository's main branch ZIP, unpack it with a system tool
-// and rerun its installer into the current install directory (config.json, the
-// Application ID and state stay – the installer never overwrites them).
-// Every external tool gets its arguments as an array (execFile/spawnSync, no shell string).
+// `cli.js update`: download the latest release (or the main branch / a given version) as a
+// ZIP, unpack it with a system tool and rerun its installer into the current install
+// directory (config.json, the Application ID and state stay – the installer never
+// overwrites them). Every external tool gets its arguments as an array (no shell string).
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const versionLib = require('./version');
 
 // Which system tool unpacks the ZIP on this platform.
 function unpackCommand(zip, outDir, platform = process.platform) {
@@ -32,14 +33,43 @@ function download(url, dest, hops = 0) {
   });
 }
 
+// What to download:
+//   ref 'release' (default) – the latest published release (its tag), skipped when the
+//                             installed version is already that new (unless force)
+//   ref 'main'              – the main branch (unreleased changes)
+//   ref '1.2.3' / 'v1.2.3'  – that release tag (also older ones)
+async function resolveTarget({ repo, ref = 'release', force = false, installed, latest, log }) {
+  if (ref === 'main') return { url: `https://codeload.github.com/${repo}/zip/refs/heads/main`, label: 'main branch' };
+  if (ref === 'release') {
+    const r = await latest(repo);
+    if (!force && installed && versionLib.compare(r.version, installed) <= 0) {
+      log(`Already up to date: installed ${installed}, latest release ${r.version}. (--force reinstalls it, --main takes unreleased changes.)`);
+      return null;
+    }
+    return { url: `https://codeload.github.com/${repo}/zip/refs/tags/${encodeURIComponent(r.tag)}`, label: `release ${r.tag}`, version: r.version };
+  }
+  if (!versionLib.parse(ref)) throw new Error(`"${ref}" is not a version – use update, update --main or update <version>, e.g. update 1.1.0.`);
+  const tag = ref.startsWith('v') ? ref : `v${ref}`;
+  return { url: `https://codeload.github.com/${repo}/zip/refs/tags/${encodeURIComponent(tag)}`, label: `release ${tag}`, version: tag.slice(1) };
+}
+
 // Throws on any failure; the temporary directory is removed in every case.
-async function update({ repo, appDir, platform = process.platform, fetch = download, log = console.log, nodePath = process.execPath, run = spawnSync }) {
+// Returns { status: 'updated', label, version } or { status: 'current' }.
+async function update({ repo, appDir, ref = 'release', force = false, installed = versionLib.installedVersion(appDir), latest = versionLib.latestRelease, platform = process.platform, fetch = download, log = console.log, nodePath = process.execPath, run = spawnSync }) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) throw new Error('updateRepo in config.json must look like "owner/name".');
+  let target;
+  try { target = await resolveTarget({ repo, ref, force, installed, latest, log }); }
+  catch (e) {
+    if (e.code === 'NO_RELEASE') throw new Error(`${repo} has no published release yet – use "update --main" for the main branch.`);
+    throw e;
+  }
+  if (!target) return { status: 'current' };
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cdp-update-'));
   try {
     const zip = path.join(tmp, 'source.zip');
-    log(`Downloading https://github.com/${repo} (main)…`);
-    await fetch(`https://codeload.github.com/${repo}/zip/refs/heads/main`, zip);
+    log(`Downloading https://github.com/${repo} (${target.label})…`);
+    try { await fetch(target.url, zip); }
+    catch (e) { if (/HTTP 404/.test(e.message) && target.version) throw new Error(`No release ${target.label.replace('release ', '')} in ${repo}.`); throw e; }
     const head = Buffer.alloc(4);
     const fd = fs.openSync(zip, 'r'); try { fs.readSync(fd, head, 0, 4, 0); } finally { fs.closeSync(fd); }
     if (head.readUInt32LE(0) !== 0x04034b50) throw new Error('The download is not a ZIP archive.');
@@ -53,9 +83,10 @@ async function update({ repo, appDir, platform = process.platform, fetch = downl
     if (!top) throw new Error(`The download does not contain install.js (unpacked: ${fs.readdirSync(outDir).slice(0, 10).join(', ') || 'nothing'}).`);
     const r = run(nodePath, [path.join(top, 'install.js')], { stdio: 'inherit', env: { ...process.env, CDP_INSTALL_DIR: appDir }, windowsHide: true });
     if (r.error || r.status !== 0) throw new Error(`The installer failed (${r.error ? r.error.message : `exit ${r.status}`}) – see its output above. config.json and the Application ID were not touched.`);
+    return { status: 'updated', label: target.label, version: target.version || null };
   } finally {
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
   }
 }
 
-module.exports = { unpackCommand, update, download };
+module.exports = { unpackCommand, update, download, resolveTarget };

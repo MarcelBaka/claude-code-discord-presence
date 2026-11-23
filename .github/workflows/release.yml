@@ -31,6 +31,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Tag matches app/version.json
+        run: |
+          v=$(node -p "require('./app/version.json').version")
+          if [ "v$v" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match app/version.json ($v). Bump app/version.json first."
+            exit 1
+          fi
       - name: Build downloads
         run: node tools/build-release.js "$GITHUB_REF_NAME" dist
       - name: Publish release

@@ -24,6 +24,7 @@ const env = {
   CDP_PIPE_NAME: IS_WIN ? `\\\\.\\pipe\\cdp-test-daemon-${rnd}` : path.join(sockDir, 'daemon.sock'),
   CDP_DISCORD_PIPE_PREFIX: IS_WIN ? `\\\\.\\pipe\\cdp-test-discord-${rnd}-` : path.join(sockDir, 'discord-ipc-'),
   CDP_FAST: '1',
+  CDP_NO_UPDATE_CHECK: '1',
   CDP_PROJECTS_DIR: path.join(tmp, 'projects'),
   CDP_STARTUP_DIR: path.join(tmp, 'startup'),
   CDP_LAUNCH_AGENTS_DIR: path.join(tmp, 'agents'), // never the real ~/Library/LaunchAgents
@@ -32,7 +33,7 @@ const env = {
 fs.mkdirSync(env.CDP_DATA_DIR, { recursive: true });
 fs.mkdirSync(path.join(env.CDP_CLAUDE_DIR, 'sessions'), { recursive: true });
 fs.mkdirSync(env.CDP_PROJECTS_DIR, { recursive: true });
-fs.writeFileSync(path.join(env.CDP_DATA_DIR, 'config.json'), JSON.stringify({ language: 'pl', largeImageKey: 'none', showStatus: false, showModel: false, showToday: 'off', showChat: false, assetBaseUrl: '', applicationId: '123456789012345678', aliases: { 'beta-repo': 'Beta – alias' } }));
+fs.writeFileSync(path.join(env.CDP_DATA_DIR, 'config.json'), JSON.stringify({ checkUpdates: false, language: 'pl', largeImageKey: 'none', showStatus: false, showModel: false, showToday: 'off', showChat: false, assetBaseUrl: '', applicationId: '123456789012345678', aliases: { 'beta-repo': 'Beta – alias' } }));
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function waitFor(fn, ms = 10000, what = 'warunek') {
@@ -354,9 +355,9 @@ test('stan Claude (Working/Waiting, Esc), model i effort, ikonki stanu, przycisk
   assert.strictEqual(w.timestamps.start, start);
 
   await hook({ hook_event_name: 'UserPromptSubmit', session_id: 'f1', transcript_path: tr, cwd: repo, prompt: 'x' });
-  const k = await waitFor(() => { const a = last(); return a && a.state && a.state.startsWith('Working · ') && a; }, 15000, 'Working');
+  const k = await waitFor(() => { const a = last(); return a && a.state && a.state.startsWith('Thinking · ') && a; }, 15000, 'Thinking after a prompt');
   assert.strictEqual(k.assets.small_image, 'https://example.test/assets/status-working.png');
-  assert.strictEqual(k.assets.small_text, 'Claude is working…');
+  assert.strictEqual(k.assets.small_text, 'Claude: thinking…');
 
   fs.appendFileSync(tr, line('f1b', 500, 'max'));
   await hook({ hook_event_name: 'Stop', session_id: 'f1', transcript_path: tr, cwd: repo });
@@ -365,7 +366,7 @@ test('stan Claude (Working/Waiting, Esc), model i effort, ikonki stanu, przycisk
 
   // Esc during a reply: no Stop hook, an interrupt marker in the transcript instead
   await hook({ hook_event_name: 'UserPromptSubmit', session_id: 'f1', transcript_path: tr, cwd: repo, prompt: 'y' });
-  await waitFor(() => { const a = last(); return a && a.state && a.state.startsWith('Working · '); }, 15000, 'Working 2');
+  await waitFor(() => { const a = last(); return a && a.state && a.state.startsWith('Thinking · '); }, 15000, 'Working 2');
   await sleep(50);
   fs.appendFileSync(tr, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] } }) + '\n');
   await waitFor(() => { const a = last(); return a && a.state && a.state.startsWith('Waiting · '); }, 15000, 'Waiting after Esc');
@@ -394,7 +395,7 @@ const setCfg = patch => { const f = path.join(env.CDP_DATA_DIR, 'config.json'); 
 // a previous failed test must not leave its daemon (with another environment) running
 async function freshStart() {
   // earlier tests may leave the integration disabled (e.g. the autostart test ends with enabled:false)
-  setCfg({ enabled: true, autostart: false, showChat: false, showStatus: false, showModel: false, showToday: 'off', language: 'pl' });
+  setCfg({ enabled: true, checkUpdates: false, autostart: false, showChat: false, showStatus: false, showModel: false, showToday: 'off', language: 'pl' });
   for (const p of procs) { try { p.kill('SIGKILL'); } catch {} }
   if (await daemonAlive()) {
     // read the reply (an unread, paused socket never emits 'close') and never wait forever
@@ -411,7 +412,7 @@ const sessionsInStatus = () => { try { return status().sessions || []; } catch {
 
 test('PID without ~/.claude/sessions: real process tree claude → sh -c → hook, shell already gone', { timeout: 60000, skip: ONLY_POSIX }, async () => {
   await freshStart();
-  setCfg({ enabled: true, autostart: false, showChat: false, showStatus: false, showToday: 'off', language: 'pl' });
+  setCfg({ enabled: true, checkUpdates: false, autostart: false, showChat: false, showStatus: false, showToday: 'off', language: 'pl' });
   const discord = new FakeDiscord(); await discord.start();
   // a fake Claude Code: a Node script literally named "claude" that runs hooks the way Claude does (sh -c "<command>")
   const binDir = path.join(tmp, 'bin'); fs.mkdirSync(binDir, { recursive: true });
@@ -569,9 +570,10 @@ test('install → reinstall (idempotent) → autostart paths → hook via shell 
   assert.match(r2.stdout, /unchanged/);
   assert.strictEqual(fs.readFileSync(settings, 'utf8'), after1, 'reinstall leaves settings.json byte-identical');
   const data = JSON.parse(after1);
-  assert.strictEqual(S.countOurs(data), 6);
+  assert.strictEqual(S.countOurs(data), 7);
   assert.deepStrictEqual(data.statusLine, foreign.statusLine);
-  assert.deepStrictEqual(data.hooks.PreToolUse, foreign.hooks.PreToolUse);
+  assert.deepStrictEqual(data.hooks.PreToolUse[0], foreign.hooks.PreToolUse[0], 'foreign PreToolUse hook kept, first');
+  assert.ok(data.hooks.PreToolUse.slice(1).every(g => g.hooks.every(h => S.isOurs(h) && h.async === true)), 'only our async hook added');
   assert.deepStrictEqual(data.hooks.SessionStart[0], foreign.hooks.SessionStart[0]);
   assert.strictEqual(JSON.parse(fs.readFileSync(path.join(inst, 'config.json'), 'utf8')).applicationId, '123456789012345678', 'Application ID kept across reinstall');
   // autostart enabled → reinstall writes the launcher with the installed paths
@@ -646,6 +648,48 @@ test('resumed session in a new Claude process: a stale <pid>.json of the dead pr
   await discord.stop();
 });
 
+test('activity line: Thinking → Editing files → Running commands → Waiting; categories only, never tool input; off → plain Working', { timeout: 60000 }, async () => {
+  await freshStart();
+  setCfg({ language: 'en', showStatus: true, showActivity: true, largeImageKey: 'https://example.test/big.png', assetBaseUrl: 'https://example.test/assets' });
+  const discord = new FakeDiscord(); await discord.start();
+  const repo = path.join(tmp, 'act-repo'); fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  const tr = path.join(tmp, 'projects', 'act1.jsonl'); fs.writeFileSync(tr, asst('act1m', Date.now(), [0, 200, 0, 0]));
+  const p = fakeClaude('act1', Date.now() - 1000);
+  const last = () => discord.last() && discord.last().activity;
+  const base = { session_id: 'act1', transcript_path: tr, cwd: repo };
+  const stateIs = (prefix, what) => waitFor(() => { const a = last(); return a && a.state && a.state.startsWith(prefix) && a; }, 15000, what);
+
+  await hook({ ...base, hook_event_name: 'SessionStart', source: 'startup' });
+  await stateIs('Waiting · ', 'Waiting');
+  await hook({ ...base, hook_event_name: 'UserPromptSubmit', prompt: 'p' });
+  await stateIs('Thinking · ', 'Thinking');
+  await sleep(400);
+  await hook({ ...base, hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: 'C:\\secret\\plan-SECRETFILE.md', old_string: 'SECRETTEXT' } });
+  const e = await stateIs('Editing files · ', 'Editing files');
+  assert.strictEqual(e.assets.small_text, 'Claude: editing files…');
+  await sleep(400);
+  await hook({ ...base, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'echo SECRETCMD' } });
+  await stateIs('Running commands · ', 'Running commands');
+  await hook({ ...base, hook_event_name: 'Stop' });
+  await stateIs('Waiting · ', 'Waiting after Stop');
+  for (const a of discord.activities) assert.ok(!/SECRET/.test(JSON.stringify(a)), 'tool input never reaches Discord');
+  for (const f of ['registry.json', 'status.json']) { try { assert.ok(!/SECRET/.test(fs.readFileSync(path.join(env.CDP_DATA_DIR, 'state', f), 'utf8')), f); } catch (err) { if (err.code !== 'ENOENT') throw err; } }
+  assert.ok(!/SECRET/.test(logText()), 'nor the log');
+
+  // activity line off: the hook exits early and the card says plain "Working"
+  setCfg({ showActivity: false });
+  await sleep(700);
+  await hook({ ...base, hook_event_name: 'UserPromptSubmit', prompt: 'q' });
+  await stateIs('Working · ', 'plain Working');
+  await hook({ ...base, hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: {} });
+  await sleep(1500);
+  assert.ok(last().state.startsWith('Working · '), 'no activity with showActivity off');
+
+  p.kill('SIGKILL');
+  await waitFor(() => discord.last().activity === null, 15000, 'cleared');
+  await discord.stop();
+});
+
 test('macOS/Linux: a slow ps result for the old PID does not drop a session that just moved to a new process', { timeout: 60000, skip: ONLY_POSIX }, async () => {
   await freshStart();
   // a slow ps: marks when it was asked, waits, then answers – for the PIDs asked at that time
@@ -678,4 +722,62 @@ test('macOS/Linux: a slow ps result for the old PID does not drop a session that
     delete env.CDP_PS;
     await discord.stop();
   }
+});
+
+test('late async PreToolUse (started before Stop, stdin delayed until after it) never reopens the ended turn; a new prompt id does', { timeout: 60000 }, async () => {
+  await freshStart();
+  setCfg({ language: 'en', showStatus: true, showActivity: true, largeImageKey: 'none' });
+  const discord = new FakeDiscord(); await discord.start();
+  const repo = path.join(tmp, 'late-repo'); fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  const tr = path.join(tmp, 'projects', 'late1.jsonl'); fs.writeFileSync(tr, asst('late1m', Date.now(), [0, 100, 0, 0]));
+  const p = fakeClaude('late1', Date.now() - 1000);
+  const base = { session_id: 'late1', transcript_path: tr, cwd: repo };
+  const last = () => discord.last() && discord.last().activity;
+  const stateIs = (prefix, what) => waitFor(() => { const a = last(); return a && a.state && a.state.startsWith(prefix) && a; }, 15000, what);
+  const registryOf = () => { try { return JSON.parse(fs.readFileSync(path.join(env.CDP_DATA_DIR, 'state', 'registry.json'), 'utf8')).sessions.find(s => s.id === 'late1'); } catch { return null; } };
+
+  await hook({ ...base, hook_event_name: 'SessionStart', source: 'startup' });
+  await hook({ ...base, hook_event_name: 'UserPromptSubmit', prompt: 'x', prompt_id: 'P1' });
+  await stateIs('Thinking · ', 'Thinking');
+
+  // the tool hook process starts first, but its stdin only arrives after Stop has finished
+  const late = spawn(process.execPath, [path.join(APP, 'hook.js'), 'PreToolUse'], { env, stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true });
+  late.stdin.on('error', () => {});
+  const lateDone = new Promise(r => late.on('close', r));
+  await sleep(300);
+  // Stop runs to completion first (its event is recorded first), then the late hook gets its
+  // input – within the hook's own 4 s limit – and records a NEWER time stamp than Stop
+  await hook({ ...base, hook_event_name: 'Stop', prompt_id: 'P1' });
+  late.stdin.end(JSON.stringify({ ...base, hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: {}, prompt_id: 'P1' }));
+  await lateDone;
+  await stateIs('Waiting · ', 'Waiting after Stop');
+  await sleep(2000);
+  assert.ok(last().state.startsWith('Waiting · '), `late hook of the ended turn reopened it: ${last().state}`);
+  assert.strictEqual(registryOf().status, 'waiting');
+
+  // no prompt id (older Claude Code): cannot tell, so it does not reopen either
+  await hook({ ...base, hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: {} });
+  await sleep(1500);
+  assert.ok(last().state.startsWith('Waiting · '), 'no prompt id → stays waiting');
+
+  // Claude continues on its own with a new prompt id → working again
+  await hook({ ...base, hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: {}, prompt_id: 'P2' });
+  await stateIs('Reading code · ', 'new prompt reopens');
+
+  // a permission prompt pauses the turn; the same prompt's next tool resumes it
+  await hook({ ...base, hook_event_name: 'Notification', message: 'needs permission', prompt_id: 'P2' });
+  await stateIs('Waiting · ', 'Waiting on Notification');
+  await hook({ ...base, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {}, prompt_id: 'P2' });
+  await stateIs('Running commands · ', 'resumed after permission');
+
+  // while working on a new prompt, a late hook of an older prompt does not change the activity
+  await hook({ ...base, hook_event_name: 'UserPromptSubmit', prompt: 'y', prompt_id: 'P3' });
+  await stateIs('Thinking · ', 'Thinking P3');
+  await hook({ ...base, hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: {}, prompt_id: 'P2' });
+  await sleep(1500);
+  assert.ok(last().state.startsWith('Thinking · '), `older prompt changed the activity: ${last().state}`);
+
+  p.kill('SIGKILL');
+  await waitFor(() => discord.last().activity === null, 15000, 'cleared');
+  await discord.stop();
 });
