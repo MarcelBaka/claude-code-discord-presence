@@ -18,7 +18,17 @@ const C = require('./lib/common');
     s.on('error', () => { clearTimeout(t); resolve(); });
   });
 
-  try { if (require('./lib/autostart').disable()) console.log('Autostart at sign-in removed.'); } catch {}
+  // a socket left behind by a crashed process – only if it is ours and nobody listens
+  if (process.platform !== 'win32') {
+    const addr = C.pipeName();
+    if ((await require('./lib/singleton').probe(addr)) === 'stale') {
+      try { const st = fs.lstatSync(addr); if (st.isSocket() && st.uid === process.getuid()) fs.unlinkSync(addr); } catch {}
+    }
+    // the per-user short-socket directory under /tmp, if it was used and is now empty
+    if (!addr.startsWith(C.P.data + path.sep)) { try { fs.rmdirSync(path.dirname(addr)); } catch {} }
+  }
+
+  try { if (require('./lib/autostart').disable()) console.log('Autostart at sign-in removed.'); } catch (e) { console.error('autostart:', e.message); }
 
   const sp = S.settingsPath();
   try {

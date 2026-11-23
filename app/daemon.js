@@ -12,13 +12,19 @@ const { SessionUsage, aggregate, countFor } = require('./lib/tokens');
 const { DiscordIPC } = require('./lib/discord-ipc');
 const { formatCost, PRICES_DATE } = require('./lib/pricing');
 const { DailyUsage } = require('./lib/daily');
+const proc = require('./lib/proc');
+const { listenExclusive, releaseSocket } = require('./lib/singleton');
+const WW = require('./lib/window-watch');
 const os = require('os');
+const IS_WIN = process.platform === 'win32';
+if (!IS_WIN) process.umask(0o077); // registry, status, logs and the socket: owner only
 
 const FAST = process.env.CDP_FAST === '1';
 const T = {
   tick: FAST ? 300 : 1000,
   scan: FAST ? 500 : 3000,          // odczyt transkryptów i żywotności procesów
-  imageCheck: FAST ? 2000 : 60000,  // kontrola ponownego użycia PID
+  imageCheck: FAST ? 2000 : (IS_WIN ? 60000 : 15000),  // PID reuse check (tasklist / ps lstart)
+  treeRetry: FAST ? 1500 : 30000,    // retry the process-tree lookup for sessions without a PID
   grace: FAST ? 2500 : 20000,       // brak sesji przez tyle ms → koniec procesu
   minGap: FAST ? 300 : 4000,        // minimalny odstęp między SET_ACTIVITY
   window: FAST ? 3000 : 20000, windowMax: 5, // limit Discord RPC: 5 aktualizacji / 20 s
@@ -63,13 +69,47 @@ function claudeSessionFiles() {
 // Ustala PID procesu Claude Code: najpierw rejestr ~/.claude/sessions/<pid>.json,
 // potem drzewo procesów od rodzica hooka.
 function resolveFromRegistry(sid) {
-  for (const j of claudeSessionFiles()) if (j.sessionId === sid) return { pid: j.pid, startedAt: j.startedAt || null, entrypoint: j.entrypoint || null, via: 'claude-sessions' };
+  for (const j of claudeSessionFiles()) if (j.sessionId === sid) return { pid: j.pid, startedAt: Number.isFinite(j.startedAt) ? j.startedAt : null, entrypoint: j.entrypoint || null, via: 'claude-sessions', procStart: claudeProcStart(j.procStart) };
   return null;
 }
 
+// Claude Code records its own process start ("procStart": ps-style lstart, seen in UTC).
+// Both readings are kept, so the identity check never depends on the time zone.
+function claudeProcStart(v) {
+  if (typeof v !== 'string') return null;
+  const a = [proc.parseLstart(v, true), proc.parseLstart(v, false)].filter(Number.isFinite);
+  return a.length ? a : null;
+}
+
 let treeLookupBusy = new Set();
-function resolveFromTree(s) {
-  if (process.platform !== 'win32' || !s.hookPpid || treeLookupBusy.has(s.id)) return;
+function adoptTreePid(s, pid, start, name, via) {
+  if (s.pid) return;
+  s.pid = pid; s.pidVia = via; s.imageName = name || null;
+  if (start) { s.procStart = start; if (!s.processStart) s.processStart = start; }
+  attachRun(s); saveRegistry(); log('pid via', via, s.id.slice(0, 8), s.pid);
+  forceScan = true;
+}
+
+// Fallback when ~/.claude/sessions has no entry for the session: walk the real process
+// tree up from the hook's parent to the Claude Code process.
+function resolveFromTree(s, ancestors) {
+  if (s.pid || treeLookupBusy.has(s.id)) return;
+  s.treeTriedAt = Date.now();
+  if (!IS_WIN) {
+    // 1) ancestors captured by the hook itself (the shell that ran it may be gone now)
+    const hit = proc.fromAncestors(ancestors || s.ancestors);
+    if (hit) return adoptTreePid(s, hit.pid, hit.start, hit.comm, 'process-tree');
+    if (!s.hookPpid) return;
+    // 2) ps from the hook's parent, if it still exists
+    treeLookupBusy.add(s.id);
+    proc.findClaudeAsync(s.hookPpid, (err, c) => {
+      treeLookupBusy.delete(s.id);
+      if (err) { log('tree lookup failed', err.message); return; }
+      if (c) adoptTreePid(s, c.pid, c.start, c.comm, 'process-tree');
+    });
+    return;
+  }
+  if (!s.hookPpid) return;
   treeLookupBusy.add(s.id);
   const ps = "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{n='Created';e={$_.CreationDate.ToUniversalTime().ToString('o')}} | ConvertTo-Json -Compress";
   execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true, timeout: 20000, maxBuffer: 64 << 20 }, (err, stdout) => {
@@ -81,12 +121,8 @@ function resolveFromTree(s) {
     for (let i = 0; cur && i < 12; i++) {
       const name = String(cur.Name || '').toLowerCase();
       const cl = String(cur.CommandLine || '').toLowerCase();
-      if (name === 'claude.exe' || name === 'claude' || (name === 'node.exe' && /claude-code|[\\/]claude(\.js)?\b/.test(cl))) {
-        if (!s.pid) {
-          s.pid = cur.ProcessId; s.pidVia = 'process-tree'; s.imageName = cur.Name;
-          if (!s.runStartFixed && cur.Created) { s.processStart = Date.parse(cur.Created) || null; }
-          attachRun(s); saveRegistry(); log('pid via tree', s.id.slice(0, 8), s.pid);
-        }
+      if (name === 'claude.exe' || name === 'claude' || (name === 'node.exe' && /claude-code|[\\/]claude(\.js)?\b/.test(cl) && !/discord-presence/.test(cl))) {
+        adoptTreePid(s, cur.ProcessId, cur.Created ? Date.parse(cur.Created) || null : null, cur.Name, 'process-tree');
         return;
       }
       cur = byPid.get(cur.ParentProcessId);
@@ -117,7 +153,7 @@ function saveRegistry() {
   const data = {
     sessions: [...sessions.values()].map(s => ({
       id: s.id, pid: s.pid, pidVia: s.pidVia, imageName: s.imageName || null, transcriptPath: s.transcriptPath, cwd: s.cwd,
-      projectRoot: s.projectRoot, lastActivity: s.lastActivity, firstSeen: s.firstSeen, processStart: s.processStart, hookPpid: s.hookPpid, entrypoint: s.entrypoint || null, status: s.status || null, statusSince: s.statusSince || null,
+      projectRoot: s.projectRoot, lastActivity: s.lastActivity, firstSeen: s.firstSeen, processStart: s.processStart, procStart: s.procStart || null, claudeProcStart: s.claudeProcStart || null, hookPpid: s.hookPpid, entrypoint: s.entrypoint || null, status: s.status || null, statusSince: s.statusSince || null,
     })),
     runs: [...runs.values()].map(r => ({ key: r.key, start: r.start, sids: [...r.usages.keys()] })),
   };
@@ -173,6 +209,7 @@ function handleEvent(ev) {
   if (ev.projectRoot) s.projectRoot = ev.projectRoot;
   else if (ev.cwd) { const r = findProjectRoot(ev.cwd); s.projectRoot = r && r.root; }
   if (ev.hookPpid) s.hookPpid = ev.hookPpid;
+  if (Array.isArray(ev.ancestors) && ev.ancestors.length) s.ancestors = ev.ancestors.slice(0, 16);
   // aktywność użytkownika: start sesji i wysłanie promptu (nie statusLine, nie zmiana katalogu)
   if (ev.event === 'SessionStart' || ev.event === 'UserPromptSubmit') s.lastActivity = Math.max(s.lastActivity, ev.at || Date.now());
   // Claude's state: working after a prompt, waiting for you after the reply / a notification
@@ -180,10 +217,10 @@ function handleEvent(ev) {
   else if (['Stop', 'StopFailure', 'Notification', 'SessionStart'].includes(ev.event)) { s.status = 'waiting'; s.statusSince = ev.at || Date.now(); }
   if (!s.pid) {
     const r = resolveFromRegistry(sid);
-    if (r) { s.pid = r.pid; s.pidVia = r.via; s.processStart = r.startedAt; s.entrypoint = r.entrypoint; }
+    if (r) { s.pid = r.pid; s.pidVia = r.via; s.processStart = r.startedAt; s.entrypoint = r.entrypoint; s.claudeProcStart = r.procStart; }
   }
   attachRun(s);
-  if (!s.pid) resolveFromTree(s);
+  if (!s.pid) resolveFromTree(s, ev.ancestors);
   if (isNew) log('session', ev.event, sid.slice(0, 8), 'pid', s.pid || '?', 'via', s.pidVia || '-', ev.source || '');
 }
 
@@ -219,7 +256,8 @@ function checkLiveness() {
   for (const s of [...sessions.values()]) {
     if (!s.pid) {
       const r = resolveFromRegistry(s.id);
-      if (r) { s.pid = r.pid; s.pidVia = r.via; s.entrypoint = r.entrypoint; s.processStart = s.processStart || r.startedAt; attachRun(s); changed = true; }
+      if (r) { s.pid = r.pid; s.pidVia = r.via; s.entrypoint = r.entrypoint; s.processStart = s.processStart || r.startedAt; s.claudeProcStart = r.procStart; attachRun(s); changed = true; }
+      else if (Date.now() - (s.treeTriedAt || 0) > T.treeRetry) resolveFromTree(s);
       continue; // bez PID nie da się wykryć awarii – czekamy na SessionEnd
     }
     if (!s.epChecked) {
@@ -232,25 +270,58 @@ function checkLiveness() {
       sessions.delete(s.id); const run = runs.get(s.runKey); if (run) pruneRun(run); changed = true;
     }
   }
-  if (Date.now() - lastImageCheck > T.imageCheck && process.platform === 'win32' && sessions.size) {
+  if (Date.now() - lastImageCheck > T.imageCheck && sessions.size) {
     lastImageCheck = Date.now();
-    execFile('tasklist', ['/FO', 'CSV', '/NH'], { windowsHide: true, timeout: 15000, maxBuffer: 16 << 20 }, (err, out) => {
-      if (err) return;
-      const names = new Map();
-      for (const line of out.split(/\r?\n/)) { const m = /^"([^"]+)","(\d+)"/.exec(line); if (m) names.set(+m[2], m[1]); }
-      for (const s of [...sessions.values()]) {
-        if (!s.pid) continue;
-        const nm = names.get(s.pid);
-        if (!nm) continue;
-        if (!s.imageName) { s.imageName = nm; continue; }
-        if (nm.toLowerCase() !== s.imageName.toLowerCase()) {
-          log('pid reused', s.pid, s.imageName, '->', nm); sessions.delete(s.id);
-          const run = runs.get(s.runKey); if (run) pruneRun(run);
-        }
-      }
-    });
+    if (IS_WIN) checkImagesWindows(); else checkStartTimesUnix();
   }
   if (changed) saveRegistry();
+}
+
+function dropSession(s, why) {
+  log(why, s.pid, 'session', s.id.slice(0, 8));
+  sessions.delete(s.id);
+  const run = runs.get(s.runKey); if (run) pruneRun(run);
+  forceScan = true;
+}
+
+function checkImagesWindows() {
+  execFile('tasklist', ['/FO', 'CSV', '/NH'], { windowsHide: true, timeout: 15000, maxBuffer: 16 << 20 }, (err, out) => {
+    if (err) return;
+    const names = new Map();
+    for (const line of out.split(/\r?\n/)) { const m = /^"([^"]+)","(\d+)"/.exec(line); if (m) names.set(+m[2], m[1]); }
+    for (const s of [...sessions.values()]) {
+      if (!s.pid) continue;
+      const nm = names.get(s.pid);
+      if (!nm) continue;
+      if (!s.imageName) { s.imageName = nm; continue; }
+      if (nm.toLowerCase() !== s.imageName.toLowerCase()) dropSession(s, `pid reused (${s.imageName} -> ${nm})`);
+    }
+  });
+}
+
+// macOS/Linux: the start time identifies the process. A PID whose process started later
+// than the one we know (or later than Claude's own startedAt) was reused by another program.
+function checkStartTimesUnix() {
+  const list = [...sessions.values()].filter(s => s.pid);
+  if (!list.length) return;
+  proc.startTimes([...new Set(list.map(s => s.pid))], (err, starts) => {
+    if (err) { log('ps check failed', err.message); return; }
+    let changed = false;
+    for (const s of list) {
+      if (!sessions.has(s.id)) continue;
+      const st = starts.get(s.pid);
+      if (st === undefined) { dropSession(s, 'process gone'); changed = true; continue; }
+      if (st === null) continue;
+      if (s.procStart) {
+        if (Math.abs(st - s.procStart) > 1500) { dropSession(s, 'pid reused (start time changed)'); changed = true; }
+        continue;
+      }
+      // first observation: compare with the start time Claude Code recorded for its PID
+      if (Array.isArray(s.claudeProcStart) && !s.claudeProcStart.some(t => Math.abs(st - t) <= 1500)) { dropSession(s, 'pid reused (start time differs from Claude\'s record)'); changed = true; continue; }
+      s.procStart = st; changed = true;
+    }
+    if (changed) saveRegistry();
+  });
 }
 
 // ---------- prezentacja ----------
@@ -260,12 +331,14 @@ function checkLiveness() {
 // (aplikacja Claude) nie ma widocznego okna. Okno zminimalizowane = nadal widoczne.
 let windowVis = {};           // pid sesji -> true/false
 let appState = { visible: false, mode: 'unknown' }; // Claude desktop app: window visible? which tab?
+let macInfo = null;           // macOS: { state, mode, accessibility } from the watcher
 let chatSince = null;         // when the regular Claude chat tab became the shown tab
 function isChat() { return !!cfg.showChat && appState.visible && appState.mode === 'chat'; }
 function applyWatch(v) {
-  if (v && typeof v === 'object' && (v.vis || v.app)) { windowVis = v.vis || {}; appState = { visible: !!(v.app && v.app.visible), mode: (v.app && v.app.mode) || 'unknown' }; }
-  else { windowVis = v || {}; appState = { visible: false, mode: 'unknown' }; }
+  if (v && typeof v === 'object' && (v.vis || v.app)) { windowVis = v.vis || {}; appState = { visible: !!(v.app && v.app.visible), mode: (v.app && v.app.mode) || 'unknown' }; macInfo = v.mac || null; }
+  else { windowVis = v || {}; appState = { visible: false, mode: 'unknown' }; macInfo = null; }
 }
+function windowedPids() { return [...sessions.values()].filter(isWindowed).map(s => s.pid); }
 let watcher = null, watcherPids = '', watcherRestartAt = 0, watcherFails = 0;
 const WATCH_PIDS = path.join(C.P.data, 'state', 'window-pids.txt');
 
@@ -273,14 +346,27 @@ function isWindowed(s) { return cfg.hideWhenWindowClosed && s.entrypoint === 'cl
 function isHidden(s) { return isWindowed(s) && windowVis[String(s.pid)] === false; }
 
 function updateWindowWatch() {
-  if (process.env.CDP_WINDOW_STATE_FILE) { applyWatch(C.readJson(process.env.CDP_WINDOW_STATE_FILE, {}) || {}); return; }
-  const pids = [...sessions.values()].filter(isWindowed).map(s => s.pid).sort((a, b) => a - b).join(',');
+  if (process.env.CDP_WINDOW_STATE_FILE) {
+    const v = C.readJson(process.env.CDP_WINDOW_STATE_FILE, {}) || {};
+    applyWatch(v && v.mac_raw ? WW.fromMac(v.mac_raw, windowedPids()) : v); // mac_raw: test input in the macOS watcher's format
+    return;
+  }
+  const pids = windowedPids().sort((a, b) => a - b).join(',');
   if (pids !== watcherPids) { try { C.ensureDir(path.dirname(WATCH_PIDS)); fs.writeFileSync(WATCH_PIDS, pids); } catch {} watcherPids = pids; }
-  if (process.platform !== 'win32') return;
-  if (!pids && !cfg.showChat) { if (watcher) { try { watcher.kill(); } catch {} watcher = null; } applyWatch({}); return; }
+  const platform = process.platform;
+  // macOS: the Code/chat tab is only known with Accessibility, so the chat card alone
+  // does not need a watcher without it
+  const wantChat = cfg.showChat && (platform === 'win32' || (platform === 'darwin' && cfg.macAccessibility));
+  const spec = WW.watcherCommand({ platform, appDir: C.P.app, daemonPid: process.pid, pidFile: WATCH_PIDS, macAccessibility: !!cfg.macAccessibility });
+  const sig = spec ? JSON.stringify(spec.args) : '';
+  if (watcher && watcher.sig !== sig) { try { watcher.kill(); } catch {} watcher = null; watcherFails = 0; watcherRestartAt = 0; }
+  if (!spec) { applyWatch({}); return; }
+  if (!pids && !wantChat) { if (watcher) { try { watcher.kill(); } catch {} watcher = null; } applyWatch({}); return; }
   if (watcher || Date.now() < watcherRestartAt) return;
   const { spawn } = require('child_process');
-  const w = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(C.P.app, 'lib', 'window-watch.ps1'), '-DaemonPid', String(process.pid), '-PidFile', WATCH_PIDS], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  let w;
+  try { w = spawn(spec.cmd, spec.args, { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }); } catch (e) { log('window watcher spawn failed', e.message); watcherRestartAt = Date.now() + 60000; return; }
+  w.sig = sig;
   watcher = w;
   let buf = '';
   w.stdout.setEncoding('utf8');
@@ -288,7 +374,13 @@ function updateWindowWatch() {
     buf += d; let i;
     while ((i = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
-      try { const v = JSON.parse(line); const before = JSON.stringify([windowVis, appState]); applyWatch(v); watcherFails = 0; if (JSON.stringify([windowVis, appState]) !== before) { log('window state', line); forceScan = true; setImmediate(tick); } } catch {}
+      try {
+        let v = JSON.parse(line);
+        if (platform === 'darwin') v = WW.fromMac(v, windowedPids());
+        const before = JSON.stringify([windowVis, appState, macInfo]);
+        applyWatch(v); watcherFails = 0;
+        if (JSON.stringify([windowVis, appState, macInfo]) !== before) { log('window state', JSON.stringify(v.mac || v)); forceScan = true; setImmediate(tick); }
+      } catch {}
     }
   });
   w.on('error', e => log('window watcher error', e.message));
@@ -514,7 +606,7 @@ function writeStatus(p) {
     config: { enabled: cfg.enabled, applicationIdSet: !!cfg.applicationId, tokenCount: cfg.tokenCount, tokenScope: cfg.tokenScope, hideProject: cfg.hideProject },
     discord: { state: discordState, error: discordError, nextRetryAt: nextRetryAt ? new Date(nextRetryAt).toISOString() : null, lastSentAt: lastSentAt ? new Date(lastSentAt).toISOString() : null },
     activityPayload: p ? p.activity : null,
-    claudeApp: { windowVisible: appState.visible, tab: appState.mode, showingChat: isChat() },
+    claudeApp: { windowVisible: appState.visible, tab: appState.mode, showingChat: isChat(), platform: process.platform, ...(macInfo ? { mac: macInfo } : process.platform === 'darwin' ? { mac: { state: 'not watched', accessibility: cfg.macAccessibility ? 'requested' : 'off' } } : {}) },
     sentToDiscord: lastPayloadJson ? JSON.parse(lastPayloadJson) : null,
     active: p ? p.debug : null,
     sessions: [...sessions.values()].map(s => ({ id: s.id, pid: s.pid, pidVia: s.pidVia || null, project: displayName(s.projectRoot, cfg), projectRoot: s.projectRoot, lastActivity: s.lastActivity ? new Date(s.lastActivity).toISOString() : null, run: s.runKey, window: isWindowed(s) ? (windowVis[String(s.pid)] === false ? 'closed' : windowVis[String(s.pid)] === true ? 'open' : 'unknown') : null })),
@@ -568,6 +660,7 @@ async function shutdown(reason) {
   else saveRegistry();
   try { C.writeJsonAtomic(C.P.status, { updatedAt: new Date().toISOString(), daemonPid: null, stopped: reason }); } catch {}
   try { server.close(); } catch {}
+  releaseSocket(listenAddr, listenIno);
   setTimeout(() => process.exit(0), 300);
 }
 
@@ -587,26 +680,21 @@ const server = net.createServer(sock => {
   sock.on('error', () => {});
 });
 
-server.on('error', e => {
-  if (e.code === 'EADDRINUSE') process.exit(0); // inny proces już działa
-  log('server error', e); process.exit(1);
-});
-
-function main() {
+let listenAddr = null, listenIno = null;
+async function main() {
   if (!cfg.enabled) process.exit(0);
-  C.ensureDir(C.P.inbox);
-  const listen = () => server.listen(C.pipeName(), () => {
-    log('daemon started', process.version, 'appId', cfg.applicationId ? 'set' : 'MISSING');
-    loadRegistry();
-    noSessionsSince = Date.now();
-    setInterval(tick, T.tick);
-    tick();
-  });
-  if (process.platform === 'win32') return listen();
-  // Unix: osierocony plik gniazda po awarii – usuń tylko, jeśli nikt nie nasłuchuje.
-  const probe = net.createConnection(C.pipeName());
-  probe.once('connect', () => { probe.destroy(); process.exit(0); });
-  probe.once('error', () => { try { fs.unlinkSync(C.pipeName()); } catch {} listen(); });
+  C.ensurePrivateDirs();
+  const addr = C.pipeName();
+  let res;
+  try { res = await listenExclusive(server, addr, { log }); } catch (e) { log('cannot listen on', addr, e.message); process.exit(1); }
+  if (!res.ok) { if (res.reason !== 'running') log('not starting:', res.reason); process.exit(0); } // another process already runs
+  listenAddr = addr; listenIno = res.ino == null ? null : res.ino;
+  server.on('error', e => log('server error', e));
+  log('daemon started', process.version, process.platform, process.arch, 'appId', cfg.applicationId ? 'set' : 'MISSING', process.argv.includes('--standby') ? '(standby)' : '');
+  loadRegistry();
+  noSessionsSince = Date.now();
+  setInterval(tick, T.tick);
+  tick();
 }
 
 process.on('uncaughtException', e => { log('uncaught', e); });

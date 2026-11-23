@@ -6,6 +6,8 @@ const path = require('path');
 const os = require('os');
 const net = require('net');
 const S = require('./app/lib/settings');
+const { stableNodePath } = require('./app/lib/nodepath');
+const NODE = stableNodePath(); // absolute; hooks and launchd do not get the terminal's PATH
 
 const SRC = path.join(__dirname, 'app');
 const DEST = process.env.CDP_INSTALL_DIR || path.join(os.homedir(), '.claude', 'discord-presence');
@@ -28,7 +30,7 @@ function stopDaemon(dir) {
     const s = net.createConnection(name);
     const t = setTimeout(() => { s.destroy(); resolve(false); }, 1500);
     s.on('connect', () => s.write('stop\n'));
-    s.on('close', () => { clearTimeout(t); resolve(true); });
+    s.on('close', () => { clearTimeout(t); setTimeout(() => resolve(true), 600); }); // let it clear the activity and exit
     s.on('error', () => { clearTimeout(t); resolve(false); });
   });
 }
@@ -57,10 +59,17 @@ function stopDaemon(dir) {
   fs.writeFileSync(cfgPath, JSON.stringify(merged, null, 2) + '\n', 'utf8');
 
   // autostart launcher points at this install – rewrite it when enabled
-  if (merged.autostart) { try { require(path.join(DEST, 'lib', 'autostart.js')).enable(process.execPath, path.join(DEST, 'daemon.js')); } catch (e) { console.error('autostart:', e.message); } }
+  let autostartFile = null;
+  if (merged.autostart) {
+    try {
+      const A = require(path.join(DEST, 'lib', 'autostart.js'));
+      autostartFile = A.enable(NODE, path.join(DEST, 'daemon.js'));
+      if (A.enable.lastLaunchctl && !A.enable.lastLaunchctl.ok) console.error('autostart: launchctl:', A.enable.lastLaunchctl.error);
+    } catch (e) { console.error('autostart:', e.message); }
+  }
 
   // 3. hooki
-  const next = S.addOurs(cur.data, process.execPath, path.join(DEST, 'hook.js'));
+  const next = S.addOurs(cur.data, NODE, path.join(DEST, 'hook.js'));
   let bak = null;
   if (JSON.stringify(next) !== JSON.stringify(cur.data)) {
     bak = S.backup(sp);
@@ -70,9 +79,13 @@ function stopDaemon(dir) {
   console.log('Discord Rich Presence for Claude Code installed.');
   console.log(`  files:   ${DEST}`);
   console.log(`  config:  ${cfgPath}`);
+  console.log(`  node:    ${NODE}`);
+  if (autostartFile) console.log(`  autostart: ${autostartFile} (updated)`);
   console.log(`  hooks:   ${sp} (${S.countOurs(next)} entries: ${S.EVENTS.join(', ')})${bak ? '' : ' – unchanged'}`);
   if (bak) console.log(`  backup:  ${bak}`);
   if (wasRunning) console.log('  stopped the previous background process (the new version starts on the next Claude event)');
-  if (!merged.applicationId) console.log('\nApplication ID MISSING – see README, then: node "' + path.join(DEST, 'cli.js') + '" set-app-id <ID>');
+  const cliCmd = process.platform === 'win32' ? `node "${path.join(DEST, 'cli.js')}"` : `${S.shQuote(NODE)} ${S.shQuote(path.join(DEST, 'cli.js'))}`;
+  if (!merged.applicationId) console.log(`\nApplication ID MISSING – see README, then: ${cliCmd} set-app-id <ID>`);
+  console.log(`Diagnostics: ${cliCmd} status`);
   console.log('\nRestart open Claude Code sessions so they load the new hooks.');
 })();

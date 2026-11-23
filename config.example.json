@@ -19,6 +19,7 @@
   "activityType": "watching",
   "showChat": true,
   "hideWhenWindowClosed": true,
+  "macAccessibility": false,
   "autostart": false,
   "largeImageKey": "",
   "largeImageText": "Claude Code",

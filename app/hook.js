@@ -10,6 +10,7 @@ const net = require('net');
 const { spawn } = require('child_process');
 
 const done = () => process.exit(0);
+if (process.platform !== 'win32') { try { process.umask(0o077); } catch {} }
 const hardStop = setTimeout(done, 4000); // nigdy nie blokujemy Claude
 
 let common;
@@ -39,6 +40,16 @@ function pingDaemon(msg) {
   });
 }
 
+function inClaudeRegistry(sid) {
+  try {
+    for (const n of fs.readdirSync(P.claudeSessions)) {
+      if (!/^\d+\.json$/.test(n)) continue;
+      try { if (JSON.parse(fs.readFileSync(path.join(P.claudeSessions, n), 'utf8')).sessionId === sid) return true; } catch {}
+    }
+  } catch {}
+  return false;
+}
+
 function startDaemon() {
   const child = spawn(process.execPath, [path.join(P.app, 'daemon.js')], {
     detached: true, stdio: 'ignore', windowsHide: true, cwd: P.data,
@@ -61,6 +72,14 @@ function startDaemon() {
     const cwd = event === 'CwdChanged' ? (input.new_cwd || input.cwd) : input.cwd;
     try { const r = require('./lib/project').findProjectRoot(cwd); projectRoot = r && r.root; } catch {}
 
+    // macOS/Linux: when Claude's own registry (~/.claude/sessions/<pid>.json) does not
+    // list this session yet, record the hook's ancestors now – the shell that runs the
+    // hook exits right after it, and the daemon could no longer walk up from it.
+    let ancestors;
+    if (process.platform !== 'win32' && (event === 'SessionStart' || event === 'UserPromptSubmit') && !inClaudeRegistry(input.session_id)) {
+      try { ancestors = require('./lib/proc').ancestorsSync(process.ppid); } catch {}
+    }
+
     // Tylko metadane – nigdy treść promptu.
     const ev = {
       event,
@@ -71,6 +90,7 @@ function startDaemon() {
       source: input.source || null,
       reason: input.reason || null,
       hookPpid: process.ppid,
+      ancestors,
       at: Date.now(),
     };
 
