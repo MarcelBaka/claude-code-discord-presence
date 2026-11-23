@@ -33,7 +33,7 @@
 | `app/lib/autostart.js` | macOS LaunchAgent (`~/Library/LaunchAgents/io.github.marcelbaka.claude-code-discord-presence.plist`): XML-escaped absolute paths, own `PATH`, `RunAtLoad`, no `KeepAlive`, `LimitLoadToSessionType=Aqua`; `launchctl bootout` + `bootstrap gui/<uid>`; removes only its own label/file. Windows VBS unchanged. |
 | `app/lib/settings.js` | POSIX single-quote escaping for hook commands on macOS/Linux; Windows format unchanged. |
 | `app/lib/nodepath.js` (new) | Homebrew Cellar path → stable `opt/<formula>/bin/node` or `bin/node` link if it resolves to the same binary. |
-| `app/lib/updater.js` (new), `app/cli.js` | `ditto -x -k` on macOS, `unzip` on Linux, `Expand-Archive` with `$args` on Windows; ZIP signature check; installer exit checked; temp folder removed in `finally`; failures exit 1. New `mac-accessibility on|off`; macOS-aware `status` and `autostart`. |
+| `app/lib/updater.js` (new), `app/cli.js` | `ditto -x -k` on macOS, `unzip` on Linux, the built-in `tar.exe` on Windows (replaced `Expand-Archive`: it unpacked nothing usable in CI); ZIP signature check; installer exit checked; temp folder removed in `finally`; failures exit 1. New `mac-accessibility on|off`; macOS-aware `status` and `autostart`. |
 | `install.js`, `app/uninstall.js` | Stable absolute Node path in hooks/LaunchAgent, LaunchAgent rewritten on reinstall when enabled, macOS command hints; uninstaller removes a stale own socket and the empty `/tmp/cdp-<uid>` folder. |
 | `test/*.js`, `.github/workflows/test.yml` | See below. |
 | `README.md` | Requirements/support table, Terminal commands, install/diagnostics/update/uninstall, autostart, Accessibility, desktop limits. |

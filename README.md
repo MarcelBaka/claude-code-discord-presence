@@ -236,7 +236,7 @@ node ~/.claude/discord-presence/cli.js update
 ```
 
 downloads the `main` branch of this repository as a ZIP, unpacks it with a system tool
-(`Expand-Archive` on Windows, `ditto` on macOS, `unzip` on Linux – arguments are passed directly,
+(the built-in `tar.exe` on Windows 10/11, `ditto` on macOS, `unzip` on Linux – arguments are passed directly,
 never through a shell string), runs its installer and keeps your configuration and Application ID.
 A failed download, unpack or install is reported as a failure (exit code 1) and the temporary files
 are removed either way. From a clone, `git pull` followed by `node install.js` does the same.

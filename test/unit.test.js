@@ -458,12 +458,11 @@ test('updater: system unpack tool per platform, arguments never spliced into a s
   assert.deepStrictEqual(unpackCommand(z, o, 'darwin'), { cmd: '/usr/bin/ditto', args: ['-x', '-k', z, o] });
   assert.deepStrictEqual(unpackCommand(z, o, 'linux'), { cmd: 'unzip', args: ['-q', '-o', z, '-d', o] });
   const w = unpackCommand(z, o, 'win32');
-  assert.strictEqual(w.cmd, 'powershell.exe');
-  assert.deepStrictEqual(w.args.slice(-2), [z, o]);
-  assert.ok(!w.args[3].includes(z));
+  assert.match(w.cmd, /System32[\\/]tar\.exe$/i);
+  assert.deepStrictEqual(w.args, ['-xf', z, '-C', o]);
 });
 
-const zipSupport = process.platform === 'darwin' || process.platform === 'win32' ? false : 'creating a test ZIP needs ditto (macOS) or Compress-Archive (Windows)';
+const zipSupport = process.platform === 'darwin' || process.platform === 'win32' ? false : 'creating a test ZIP needs ditto (macOS) or tar.exe (Windows)';
 test('updater: real unpack + installer run; failures reported, temp files removed', { skip: zipSupport }, async () => {
   const { update } = require('../app/lib/updater');
   const src = path.join(tmp, 'upd-src'), top = path.join(src, 'repo-main');
@@ -473,7 +472,7 @@ test('updater: real unpack + installer run; failures reported, temp files remove
     fs.writeFileSync(path.join(top, 'install.js'), installJs);
     const zip = path.join(tmp, `upd-${Math.random().toString(36).slice(2)}.zip`);
     if (process.platform === 'darwin') execFileSync('/usr/bin/ditto', ['-c', '-k', '--keepParent', top, zip]);
-    else execFileSync('powershell.exe', ['-NoProfile', '-Command', '& { Compress-Archive -Path (Join-Path $args[0] \'*\') -DestinationPath $args[1] }', src, zip]); // keeps the repo-main/ folder, like GitHub
+    else execFileSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'), ['-a', '-c', '-f', zip, '-C', src, 'repo-main']); // ZIP with a repo-main/ folder, like GitHub
     return zip;
   };
   const tmpBefore = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('cdp-update-')).length;

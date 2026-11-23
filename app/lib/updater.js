@@ -11,8 +11,8 @@ const { spawnSync } = require('child_process');
 // Which system tool unpacks the ZIP on this platform.
 function unpackCommand(zip, outDir, platform = process.platform) {
   if (platform === 'win32') {
-    // paths go in as arguments ($args), not spliced into the script text
-    return { cmd: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', '& { Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force }', zip, outDir] };
+    // bsdtar shipped with Windows 10 1803+ / 11 reads ZIP files; paths are plain arguments
+    return { cmd: path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'), args: ['-xf', zip, '-C', outDir] };
   }
   if (platform === 'darwin') return { cmd: '/usr/bin/ditto', args: ['-x', '-k', zip, outDir] };
   return { cmd: 'unzip', args: ['-q', '-o', zip, '-d', outDir] };
@@ -50,7 +50,7 @@ async function update({ repo, appDir, platform = process.platform, fetch = downl
     if (ex.error || ex.status !== 0) throw new Error(`Could not unpack the download (${u.cmd}): ${(ex.error && ex.error.message) || (ex.stderr || '').trim() || `exit ${ex.status}`}`);
     // GitHub ZIPs have one top folder (<repo>-main/); accept a flat archive too
     const top = [outDir, ...fs.readdirSync(outDir).map(n => path.join(outDir, n))].find(d => fs.existsSync(path.join(d, 'install.js')));
-    if (!top) throw new Error('The download does not contain install.js.');
+    if (!top) throw new Error(`The download does not contain install.js (unpacked: ${fs.readdirSync(outDir).slice(0, 10).join(', ') || 'nothing'}).`);
     const r = run(nodePath, [path.join(top, 'install.js')], { stdio: 'inherit', env: { ...process.env, CDP_INSTALL_DIR: appDir }, windowsHide: true });
     if (r.error || r.status !== 0) throw new Error(`The installer failed (${r.error ? r.error.message : `exit ${r.status}`}) – see its output above. config.json and the Application ID were not touched.`);
   } finally {
