@@ -62,7 +62,7 @@ Discord client's local RPC and your own public Application ID.
 |---|---|
 | Windows 10/11 x64 | Supported; real Discord and Claude verified by the author; CI: Node 18/20/22 |
 | macOS, Intel (x64) | Supported; full test suite passed on macOS 13.7 Intel (Node 22); Discord socket discovery and the IPC handshake checked against a real Discord client; CI job `macos-15-intel` (Node 22) |
-| macOS, Apple Silicon (arm64) | Supported by the same code (no architecture-specific parts); covered by the CI job `macos-latest` (Node 20/22/24) – see the Actions badge for its current result |
+| macOS, Apple Silicon (arm64) | Supported; CI `macos-latest` (Node 20/22/24) passes with a fake Discord IPC server; not yet checked with a real Discord on an M-series Mac |
 | Linux | Code paths exist (sockets, `ps`, XDG/Flatpak/Snap Discord sockets) but are not tested |
 | WSL | Not supported |
 

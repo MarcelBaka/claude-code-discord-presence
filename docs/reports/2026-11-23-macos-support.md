@@ -70,11 +70,12 @@ Not used: the hook "exec form" (`args`, no shell) documented for current Claude 
 ## Platforms and architectures
 | | Verified |
 |---|---|
-| macOS Intel x64 | full suite locally (above) |
-| macOS Apple Silicon arm64 | **not run** – CI job `macos-latest` (Node 20/22/24) configured; the job asserts `process.arch === arm64` |
-| macOS Intel in CI | job `macos-15-intel` (Node 22) configured, asserts `x64`; GitHub's Intel images are being phased out – replace the label if it is retired |
-| Windows | **not run here**; CI jobs Node 18/20/22 kept; Windows-only tests now pass `platform: 'win32'` explicitly |
+| macOS Intel x64 | full suite locally (above) + GitHub Actions `macos-15-intel`, Node 22: pass |
+| macOS Apple Silicon arm64 | GitHub Actions `macos-latest` (job asserts `process.arch === arm64`), Node 20/22/24: pass – fake Discord only, no real Discord on arm64 |
+| Windows x64 | GitHub Actions `windows-latest`, Node 18/20/22: pass (macOS/Unix-only cases skipped with a reason) – not re-checked with a real Discord after this change |
 | Linux | not tested (code paths only) |
+
+CI history on PR #1: the first run failed on Windows (three new tests made Unix assumptions; the updater's `Expand-Archive` call unpacked nothing usable) and once on Apple Silicon/Node 22 (a test helper without a timeout hung). After fixes – `path.posix` for the macOS watcher path, the built-in `tar.exe` for unpacking on Windows, config reset and time-bounded helpers in tests – run 45157413589 passed on all 7 jobs.
 
 ## Remaining limitations
 - Without Accessibility, macOS cannot tell a minimized window, a window on another Space and a closed window apart → the card stays (state `unknown`); the chat card is not shown.
