@@ -567,7 +567,9 @@ test('installer (Windows .cmd): invalid ID re-asked, install, autostart', { skip
   fs.writeFileSync(input, 'abc\r\n123456789012345678\r\ny\r\n');
   const fd = fs.openSync(input, 'r'); // a file (not a pipe) behind stdin, like "< input.txt"
   let r;
-  try { r = spawnSync('cmd.exe', ['/d', '/c', 'install-windows.cmd'], { cwd: dir, env: sandboxEnv(home), stdio: [fd, 'pipe', 'pipe'], encoding: 'utf8' }); } finally { fs.closeSync(fd); }
+  // full path: with NoDefaultCurrentDirectoryInExePath set (e.g. inside Claude Code) cmd.exe
+  // does not run a bare name from the current folder
+  try { r = spawnSync('cmd.exe', ['/d', '/c', path.join(dir, 'install-windows.cmd')], { cwd: dir, env: sandboxEnv(home), stdio: [fd, 'pipe', 'pipe'], encoding: 'utf8' }); } finally { fs.closeSync(fd); }
   assert.strictEqual(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /does not look like an Application ID/);
   checkInstalled(home, '123456789012345678');

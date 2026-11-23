@@ -397,7 +397,13 @@ async function freshStart() {
   setCfg({ enabled: true, autostart: false, showChat: false, showStatus: false, showModel: false, showToday: 'off', language: 'pl' });
   for (const p of procs) { try { p.kill('SIGKILL'); } catch {} }
   if (await daemonAlive()) {
-    await new Promise(r => { const s = net.createConnection(env.CDP_PIPE_NAME); s.on('connect', () => s.end('stop\n')); s.on('close', r); s.on('error', r); });
+    // read the reply (an unread, paused socket never emits 'close') and never wait forever
+    await new Promise(r => {
+      const s = net.createConnection(env.CDP_PIPE_NAME);
+      const t = setTimeout(() => { s.destroy(); r(); }, 3000);
+      const done = () => { clearTimeout(t); r(); };
+      s.on('connect', () => s.end('stop\n')); s.on('data', () => {}); s.on('close', done); s.on('error', done);
+    });
     await waitFor(async () => !(await daemonAlive()), 10000, 'previous daemon stopped');
   }
 }
@@ -603,4 +609,73 @@ test('install → reinstall (idempotent) → autostart paths → hook via shell 
   assert.ok(!fs.existsSync(inst), 'install directory removed');
   if (launcher) assert.ok(!fs.existsSync(launcher), 'launcher removed');
   assert.ok(fs.readdirSync(path.join(claudeDir, 'backups')).length >= 2, 'backups kept');
+});
+
+test('resumed session in a new Claude process: a stale <pid>.json of the dead process is ignored, a running session follows the new process', { timeout: 60000 }, async () => {
+  await freshStart();
+  const discord = new FakeDiscord(); await discord.start();
+  const repo = path.join(tmp, 'resume-repo'); fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  const tr = path.join(tmp, 'projects', 'rs1.jsonl'); fs.writeFileSync(tr, asst('rs1m', Date.now(), [0, 300, 0, 0]));
+  const sessionsDir = path.join(env.CDP_CLAUDE_DIR, 'sessions');
+
+  // 1) Claude restarted and resumed the conversation: the old process's entry is still there
+  const deadPid = 999990 + Math.floor(Math.random() * 9);
+  const t0 = Date.now() - 600000;
+  fs.writeFileSync(path.join(sessionsDir, `${deadPid}.json`), JSON.stringify({ pid: deadPid, sessionId: 'rs1', startedAt: t0 }));
+  const start1 = Date.now() - 5000;
+  const p1 = fakeClaude('rs1', start1);
+  await hook({ hook_event_name: 'SessionStart', session_id: 'rs1', transcript_path: tr, cwd: repo, source: 'resume' });
+  const a1 = await waitFor(() => { const l = discord.last(); return l && l.activity && l.activity.details === 'Projekt: resume-repo' && l; }, 15000, 'resumed session shown');
+  assert.strictEqual(a1.activity.timestamps.start, start1, 'timer from the live process, not the stale entry');
+  const s1 = sessionsInStatus().find(s => s.id === 'rs1');
+  assert.ok(s1 && s1.pid === p1.pid, `bound to the live process (got ${s1 && s1.pid})`);
+
+  // 2) the conversation is resumed in yet another process while the first one exits
+  const start2 = Date.now();
+  const p2 = fakeClaude('rs1', start2);
+  p1.kill('SIGKILL');
+  const a2 = await waitFor(() => { const l = discord.last(); return l && l.activity && l.activity.timestamps.start === start2 && l; }, 15000, 'followed the new process');
+  assert.strictEqual(a2.activity.details, 'Projekt: resume-repo');
+  assert.ok(sessionsInStatus().some(s => s.id === 'rs1' && s.pid === p2.pid));
+
+  // 3) no live process left for the conversation → closed
+  p2.kill('SIGKILL');
+  await waitFor(() => discord.last().activity === null, 15000, 'cleared');
+  try { fs.rmSync(path.join(sessionsDir, `${deadPid}.json`)); } catch {}
+  await waitFor(async () => !(await daemonAlive()), 15000, 'daemon exits');
+  await discord.stop();
+});
+
+test('macOS/Linux: a slow ps result for the old PID does not drop a session that just moved to a new process', { timeout: 60000, skip: ONLY_POSIX }, async () => {
+  await freshStart();
+  // a slow ps: marks when it was asked, waits, then answers – for the PIDs asked at that time
+  const slowPs = path.join(tmp, 'slow-ps.sh');
+  const marker = path.join(tmp, 'ps-asked');
+  fs.writeFileSync(slowPs, `#!/bin/sh\ntouch '${marker}'\nsleep 2\nexec /bin/ps "$@"\n`);
+  fs.chmodSync(slowPs, 0o755);
+  env.CDP_PS = slowPs;
+  const discord = new FakeDiscord(); await discord.start();
+  try {
+    const repo = path.join(tmp, 'psrace-repo'); fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+    const tr = path.join(tmp, 'projects', 'psr1.jsonl'); fs.writeFileSync(tr, asst('psr1m', Date.now(), [0, 100, 0, 0]));
+    const p1 = fakeClaude('psr1', Date.now() - 5000);
+    await hook({ hook_event_name: 'SessionStart', session_id: 'psr1', transcript_path: tr, cwd: repo, source: 'startup' });
+    await waitFor(() => { const l = discord.last(); return l && l.activity && l.activity.details === 'Projekt: psrace-repo'; }, 15000, 'shown');
+    // wait for a ps check that is still running, then resume in a new process and end the old one
+    try { fs.rmSync(marker); } catch {}
+    await waitFor(() => fs.existsSync(marker), 15000, 'ps asked');
+    const start2 = Date.now();
+    const p2 = fakeClaude('psr1', start2);
+    p1.kill('SIGKILL');
+    await waitFor(() => sessionsInStatus().some(s => s.id === 'psr1' && s.pid === p2.pid), 15000, 'rebound to the new process');
+    await sleep(3500); // the slow ps answers (old PID only) – the session must survive
+    assert.ok(sessionsInStatus().some(s => s.id === 'psr1' && s.pid === p2.pid), 'session still bound to the new process');
+    assert.ok(!/process gone \d+ session psr1/.test(logText().split('session moved to a new process').pop()), 'not dropped after the move');
+    assert.strictEqual(discord.last().activity && discord.last().activity.timestamps.start, start2);
+    p2.kill('SIGKILL');
+    await waitFor(() => discord.last().activity === null, 15000, 'cleared');
+  } finally {
+    delete env.CDP_PS;
+    await discord.stop();
+  }
 });
