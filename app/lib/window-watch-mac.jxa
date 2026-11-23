@@ -6,8 +6,8 @@
 //   running   Claude.app (bundle id com.anthropic.claudefordesktop) is running
 //   hidden    the app is hidden (Cmd+H)
 //   onscreen  number of normal (layer 0, not tiny) windows of the app currently on screen
-// With Accessibility (opt-in, System Events): per window only the minimized flag, and the
-// tab mode derived from the window title inside this script. The title itself, and any
+// With Accessibility (opt-in, System Events): per window only the minimized flag (and a tab
+// mode only if the window title states it – see modeFromTitle). The title itself, and any
 // conversation content, never leaves this process.
 ObjC.import('AppKit');
 ObjC.import('CoreGraphics');
@@ -41,10 +41,14 @@ function onscreenWindows(pid) {
   return n;
 }
 
+// On macOS the Claude window title is just "Claude" in both the Code tab and the chat
+// (checked on Claude 2.1.330), and the page content is not exposed through Accessibility
+// unless the app's own accessibility mode is switched on – which this watcher never does.
+// So the tab is only reported when a title states it explicitly; a plain "Claude" is
+// "unknown", never "chat".
 function modeFromTitle(t) {
   t = String(t || '');
   if (/ - Claude Code$/.test(t)) return 'code';
-  if (t === 'Claude' || / - Claude$/.test(t)) return 'chat';
   return 'unknown';
 }
 

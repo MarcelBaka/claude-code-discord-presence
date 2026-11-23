@@ -573,3 +573,13 @@ test('installer (Windows .cmd): invalid ID re-asked, install, autostart', { skip
   checkInstalled(home, '123456789012345678');
   assert.ok(fs.existsSync(path.join(home, 'Startup', 'Claude Code Discord Presence.vbs')), 'autostart answered y');
 });
+
+test('macOS watcher: a plain "Claude" window title is never reported as the chat tab', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'lib', 'window-watch-mac.jxa'), 'utf8');
+  const fnSrc = /function modeFromTitle\(t\) \{[\s\S]*?\n\}/.exec(src)[0];
+  const modeFromTitle = new Function(`${fnSrc}; return modeFromTitle;`)();
+  assert.strictEqual(modeFromTitle('Claude'), 'unknown', 'title is "Claude" in both tabs on macOS');
+  assert.strictEqual(modeFromTitle('Some chat - Claude'), 'unknown');
+  assert.strictEqual(modeFromTitle('My project - Claude Code'), 'code');
+  assert.strictEqual(modeFromTitle(''), 'unknown');
+});
