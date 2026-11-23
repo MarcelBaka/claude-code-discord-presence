@@ -14,6 +14,13 @@ requests. Add your change under the version in `app/version.json` when you open 
 - `update` unpacks downloads with a small built-in ZIP extractor on Linux, so `unzip` need not be
   installed (unsafe paths in an archive are refused, file permissions kept).
 
+### Fixed
+- Linux with Node 24+: Claude Code installed with npm was not recognised in the process tree – Node
+  24 names its main thread "MainThread", which is what `ps` shows as the command name there. The
+  command line is now checked as well.
+- Auto-update: hook events are processed before the idle check, so a prompt that just arrived is
+  never missed.
+
 ## 1.4.0 – 2026-11-23
 
 ### Added

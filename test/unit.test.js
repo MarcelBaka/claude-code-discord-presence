@@ -298,6 +298,12 @@ test('process table: ps parsing, Claude recognition, walking past the hook shell
   assert.strictEqual(P.isClaude({ comm: '/Users/z/.local/bin/claude' }), true, 'native install');
   assert.strictEqual(P.isClaude({ comm: '/bin/zsh' }, 'zsh -c claude'), false);
   assert.strictEqual(P.isClaude({ comm: 'node' }, 'node /x/.claude/discord-presence/daemon.js'), false, 'our own processes');
+  // Linux + Node 24+: comm is the main thread's name ("MainThread"), not "node"
+  assert.strictEqual(P.isClaude({ comm: 'MainThread' }, '/usr/bin/node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js'), true, 'npm Claude Code on Node 24 (Linux)');
+  assert.strictEqual(P.isClaude({ comm: 'whatever-thread' }, '/home/u/.nvm/versions/node/v24.1.0/bin/node /home/u/.npm-global/bin/claude'), true, 'recognised by the command line');
+  assert.strictEqual(P.isClaude({ comm: 'MainThread' }, '/usr/bin/node /home/u/.claude/discord-presence/daemon.js'), false, 'still never our own processes');
+  assert.strictEqual(P.isClaude({ comm: 'MainThread' }, '/usr/bin/node /srv/app/server.js'), false, 'other Node programs');
+  assert.strictEqual(P.isClaude({ comm: 'MainThread' }, null), false, 'no command line → no guess');
   const anc = [{ pid: 1201, comm: '/opt/homebrew/bin/node', args: args.get(1201) }, { pid: 1200, comm: '/bin/sh' }, { pid: 1100, comm: table.get(1100).comm, start: 5 }];
   assert.strictEqual(P.fromAncestors(anc).pid, 1100);
   assert.strictEqual(P.fromAncestors(null), null);

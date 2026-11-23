@@ -76,12 +76,17 @@ const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'fish', 'ksh', 'tcsh', 'csh
 // Claude desktop app run an executable named `claude`; npm installs run Node with the
 // @anthropic-ai/claude-code package. The desktop app itself (`Claude`, capital C),
 // its helpers, shells and our own hook never match.
+// `comm` is not always the executable: on Linux it is the main thread's name, and Node 24+
+// names that thread "MainThread". So a process also counts as Node when its command line
+// starts with a node/nodejs/bun executable.
+const NODE_BIN = /^(node|nodejs|bun)(\.exe)?$/i;
+const NODE_CMD = /^(?:\S*[\\/])?(node|nodejs|bun)(\.exe)?(\s|$)/i;
 function isClaude(proc, cmdline) {
   if (!proc) return false;
   const base = path.basename(String(proc.comm || ''));
   if (base === 'claude' || base === 'claude.exe') return true;
   if (SHELLS.has(base.replace(/^-/, ''))) return false;
-  if (/^(node|nodejs|bun)(\.exe)?$/i.test(base) && cmdline) {
+  if ((NODE_BIN.test(base) || base === 'MainThread' || NODE_CMD.test(String(cmdline || ''))) && cmdline) {
     if (/discord-presence[\\/]/.test(cmdline)) return false;
     return /@anthropic-ai[\\/]claude-code|claude-code[\\/](cli|dist)|[\\/]claude(\.m?js)?(\s|$)/.test(cmdline);
   }
@@ -105,7 +110,9 @@ function chain(table, startPid) {
   for (let i = 0; cur && i < 16 && cur.pid > 1; i++) { out.push(cur); cur = table.get(cur.ppid); }
   return out;
 }
-const needsArgs = p => /^(node|nodejs|bun)(\.exe)?$/i.test(path.basename(String(p.comm || '')));
+// command lines are read for every ancestor except shells and `claude` itself (a short
+// chain), because `comm` may be a thread name ("MainThread") rather than "node"
+const needsArgs = p => { const b = path.basename(String(p.comm || '')).replace(/^-/, ''); return !SHELLS.has(b) && b !== 'claude' && b !== 'claude.exe'; };
 
 // Run inside the hook (synchronous, ~10–30 ms): ancestors of the hook while the
 // intermediate shell still exists. The daemon looks them up later, when the shell
