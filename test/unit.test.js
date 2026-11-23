@@ -298,6 +298,12 @@ test('process table: ps parsing, Claude recognition, walking past the hook shell
   assert.strictEqual(P.isClaude({ comm: '/Users/z/.local/bin/claude' }), true, 'native install');
   assert.strictEqual(P.isClaude({ comm: '/bin/zsh' }, 'zsh -c claude'), false);
   assert.strictEqual(P.isClaude({ comm: 'node' }, 'node /x/.claude/discord-presence/daemon.js'), false, 'our own processes');
+  // Linux + Node 24+: comm is the main thread's name ("MainThread"), not "node"
+  assert.strictEqual(P.isClaude({ comm: 'MainThread' }, '/usr/bin/node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js'), true, 'npm Claude Code on Node 24 (Linux)');
+  assert.strictEqual(P.isClaude({ comm: 'whatever-thread' }, '/home/u/.nvm/versions/node/v24.1.0/bin/node /home/u/.npm-global/bin/claude'), true, 'recognised by the command line');
+  assert.strictEqual(P.isClaude({ comm: 'MainThread' }, '/usr/bin/node /home/u/.claude/discord-presence/daemon.js'), false, 'still never our own processes');
+  assert.strictEqual(P.isClaude({ comm: 'MainThread' }, '/usr/bin/node /srv/app/server.js'), false, 'other Node programs');
+  assert.strictEqual(P.isClaude({ comm: 'MainThread' }, null), false, 'no command line → no guess');
   const anc = [{ pid: 1201, comm: '/opt/homebrew/bin/node', args: args.get(1201) }, { pid: 1200, comm: '/bin/sh' }, { pid: 1100, comm: table.get(1100).comm, start: 5 }];
   assert.strictEqual(P.fromAncestors(anc).pid, 1100);
   assert.strictEqual(P.fromAncestors(null), null);
@@ -459,14 +465,13 @@ test('updater: system unpack tool per platform, arguments never spliced into a s
   const { unpackCommand } = require('../app/lib/updater');
   const z = `/tmp/it's "x".zip`, o = '/tmp/o $x';
   assert.deepStrictEqual(unpackCommand(z, o, 'darwin'), { cmd: '/usr/bin/ditto', args: ['-x', '-k', z, o] });
-  assert.deepStrictEqual(unpackCommand(z, o, 'linux'), { cmd: 'unzip', args: ['-q', '-o', z, '-d', o] });
+  assert.deepStrictEqual(unpackCommand(z, o, 'linux'), { builtin: true }, 'Linux: built-in extractor, `unzip` may be missing');
   const w = unpackCommand(z, o, 'win32');
   assert.match(w.cmd, /System32[\\/]tar\.exe$/i);
   assert.deepStrictEqual(w.args, ['-xf', z, '-C', o]);
 });
 
-const zipSupport = process.platform === 'darwin' || process.platform === 'win32' ? false : 'creating a test ZIP needs ditto (macOS) or tar.exe (Windows)';
-test('updater: real unpack + installer run; failures reported, temp files removed', { skip: zipSupport }, async () => {
+test('updater: real unpack + installer run; failures reported, temp files removed', async () => {
   const { update } = require('../app/lib/updater');
   const src = path.join(tmp, 'upd-src'), top = path.join(src, 'repo-main');
   fs.mkdirSync(top, { recursive: true });
@@ -474,8 +479,8 @@ test('updater: real unpack + installer run; failures reported, temp files remove
   const mkZip = (installJs) => {
     fs.writeFileSync(path.join(top, 'install.js'), installJs);
     const zip = path.join(tmp, `upd-${Math.random().toString(36).slice(2)}.zip`);
-    if (process.platform === 'darwin') execFileSync('/usr/bin/ditto', ['-c', '-k', '--keepParent', top, zip]);
-    else execFileSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'), ['-a', '-c', '-f', zip, '-C', src, 'repo-main']); // ZIP with a repo-main/ folder, like GitHub
+    // a ZIP with a repo-main/ folder, like GitHub's – written by our own writer, so this runs on every OS
+    fs.writeFileSync(zip, require('../tools/build-release').zip([{ name: 'repo-main/', data: null, mode: 0o755 }, { name: 'repo-main/install.js', data: Buffer.from(installJs), mode: 0o644 }]));
     return zip;
   };
   const tmpBefore = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('cdp-update-')).length;
@@ -498,17 +503,17 @@ function unpackZip(zipFile, dest) {
   fs.mkdirSync(dest, { recursive: true });
   if (process.platform === 'darwin') execFileSync('/usr/bin/ditto', ['-x', '-k', zipFile, dest]);
   else if (process.platform === 'win32') execFileSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'), ['-xf', zipFile, '-C', dest]);
-  else execFileSync('unzip', ['-q', zipFile, '-d', dest]);
+  else require('../app/lib/unzip').extract(zipFile, dest); // Linux: our built-in extractor
 }
 const relDir = path.join(tmp, 'release');
 let relBuilt = null;
 const relBuild = () => relBuilt || (relBuilt = require('../tools/build-release').build('v9.8.7', path.join(relDir, 'dist')));
 
-test('release: macOS and Windows ZIPs with one top folder, installer, app files; valid CRC', () => {
+test('release: macOS, Windows and Linux ZIPs with one top folder, installer, app files; valid CRC', () => {
   const { crc32 } = require('../tools/build-release');
   assert.strictEqual(crc32(Buffer.from('123456789')), 0xcbf43926, 'standard CRC-32 check value');
   const r = relBuild();
-  assert.deepStrictEqual(Object.keys(r).sort(), ['macos', 'windows']);
+  assert.deepStrictEqual(Object.keys(r).sort(), ['linux', 'macos', 'windows']);
   assert.match(path.basename(r.macos), /^claude-code-discord-presence-9\.8\.7-macos\.zip$/);
   for (const [k, f] of Object.entries(r)) {
     const dest = path.join(relDir, k);
@@ -526,12 +531,16 @@ test('release: macOS and Windows ZIPs with one top folder, installer, app files;
   assert.ok(!fs.readFileSync(mac, 'utf8').includes('\r'), 'macOS script with LF');
   assert.ok(/\r\n/.test(fs.readFileSync(win, 'utf8')) && !/[^\r]\n/.test(fs.readFileSync(win, 'utf8')), 'Windows script with CRLF only');
   if (POSIX) assert.strictEqual(fs.statSync(mac).mode & 0o111, 0o111, 'install-macos.command is executable after unzip');
+  const lin = path.join(relDir, 'linux', 'claude-code-discord-presence-9.8.7', 'install-linux.sh');
+  assert.ok(fs.existsSync(lin) && !fs.existsSync(path.join(relDir, 'linux', 'claude-code-discord-presence-9.8.7', 'install-macos.command')), 'Linux ZIP has only its own installer');
+  assert.ok(!fs.readFileSync(lin, 'utf8').includes('\r'), 'Linux script with LF');
+  if (POSIX) assert.strictEqual(fs.statSync(lin).mode & 0o111, 0o111, 'install-linux.sh is executable after unzip');
   assert.throws(() => require('../tools/build-release').build('latest'), /version/);
 });
 
 function sandboxEnv(home) {
   return { ...process.env, HOME: home, USERPROFILE: home, CDP_INSTALL_DIR: path.join(home, '.claude', 'discord-presence'), CDP_SETTINGS: path.join(home, '.claude', 'settings.json'),
-    CDP_LAUNCH_AGENTS_DIR: path.join(home, 'LaunchAgents'), CDP_STARTUP_DIR: path.join(home, 'Startup'), CDP_LAUNCHCTL: 'none', CDP_NO_PAUSE: '1', CDP_DATA_DIR: '' };
+    CDP_LAUNCH_AGENTS_DIR: path.join(home, 'LaunchAgents'), CDP_STARTUP_DIR: path.join(home, 'Startup'), CDP_XDG_AUTOSTART_DIR: path.join(home, 'xdg-autostart'), CDP_LAUNCHCTL: 'none', CDP_NO_PAUSE: '1', CDP_DATA_DIR: '' };
 }
 function checkInstalled(home, appId) {
   const s = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'));
@@ -540,7 +549,7 @@ function checkInstalled(home, appId) {
   assert.strictEqual(JSON.parse(fs.readFileSync(path.join(home, '.claude', 'discord-presence', 'config.json'), 'utf8')).applicationId, appId);
 }
 
-test('installer (macOS .command): invalid ID re-asked, install, autostart, re-run keeps the saved ID', { skip: ONLY_POSIX }, () => {
+test('installer (macOS .command): invalid ID re-asked, install, autostart, re-run keeps the saved ID', { skip: ONLY_DARWIN }, () => {
   relBuild();
   const dir = path.join(relDir, 'macos', 'claude-code-discord-presence-9.8.7');
   if (!fs.existsSync(dir)) unpackZip(relBuilt.macos, path.join(relDir, 'macos'));
@@ -831,4 +840,95 @@ test('plan: subscription name from ~/.claude.json only (Pro, Max 5x/20x, Team, E
   } finally { delete process.env.CDP_CLAUDE_JSON; }
   // the credentials file (tokens) is never read
   assert.ok(!/credentials/i.test(fs.readFileSync(path.join(__dirname, '..', 'app', 'lib', 'plan.js'), 'utf8').replace(/\/\/.*$/gm, '')));
+});
+
+test('unzip (built-in, used on Linux): stored/deflated files and folders, Unix modes, refuses unsafe paths', () => {
+  const { zip } = require('../tools/build-release');
+  const U = require('../app/lib/unzip');
+  const big = Buffer.from('x'.repeat(50000) + 'żółć ✓');
+  const z = path.join(tmp, 'unzip-ok.zip');
+  fs.writeFileSync(z, zip([
+    { name: 'top/', data: null, mode: 0o755 },
+    { name: 'top/a.txt', data: Buffer.from('hello'), mode: 0o644 },
+    { name: 'top/sub dir/big ż.txt', data: big, mode: 0o644 },
+    { name: 'top/run.sh', data: Buffer.from('#!/bin/sh\necho hi\n'), mode: 0o755 },
+  ]));
+  const out = path.join(tmp, 'unzip-out');
+  U.extract(z, out);
+  assert.strictEqual(fs.readFileSync(path.join(out, 'top', 'a.txt'), 'utf8'), 'hello');
+  assert.ok(fs.readFileSync(path.join(out, 'top', 'sub dir', 'big ż.txt')).equals(big));
+  if (process.platform !== 'win32') assert.strictEqual(fs.statSync(path.join(out, 'top', 'run.sh')).mode & 0o111, 0o111, 'executable bit kept');
+  assert.strictEqual(U.entries(fs.readFileSync(z)).find(e => e.name === 'top/run.sh').mode, 0o755);
+  for (const evil of ['../escape.txt', 'top/../../escape.txt', '/abs.txt', 'C:/win.txt']) {
+    const ze = path.join(tmp, 'unzip-evil.zip');
+    fs.writeFileSync(ze, zip([{ name: evil, data: Buffer.from('nope'), mode: 0o644 }]));
+    assert.throws(() => U.extract(ze, path.join(tmp, 'unzip-evil-out')), /unsafe path/, evil);
+  }
+  assert.ok(!fs.existsSync(path.join(tmp, 'escape.txt')));
+  const notZip = path.join(tmp, 'not.zip'); fs.writeFileSync(notZip, '<html>');
+  assert.throws(() => U.extract(notZip, path.join(tmp, 'nz')), /not a ZIP/);
+});
+
+test('autostart on Linux: XDG autostart .desktop entry with quoted paths; removed again', () => {
+  const a = require('../app/lib/autostart');
+  const dir = path.join(tmp, 'xdg autostart');
+  process.env.CDP_XDG_AUTOSTART_DIR = dir;
+  try {
+    const node = "/home/o'brien/.nvm/versions/node/v22.1.0/bin/node";
+    const daemon = '/home/Zoë "Q" $HOME `x` 100%\\d/.claude/discord-presence/daemon.js';
+    const f = a.enable(node, daemon, { platform: 'linux' });
+    assert.strictEqual(f, path.join(dir, 'io.github.marcelbaka.claude-code-discord-presence.desktop'));
+    assert.ok(a.isEnabled({ platform: 'linux' }));
+    const txt = fs.readFileSync(f, 'utf8');
+    assert.match(txt, /^\[Desktop Entry\]\nType=Application\n/);
+    // Read it back the way desktop-entry readers do: 1) string-value escapes (\\ \s \n \t \r),
+    // 2) Exec argument parsing (double quotes with \" \` \$ \\ inside, %% → %).
+    const unvalue = v => v.replace(/\\(.)/g, (m, c) => ({ s: ' ', n: '\n', t: '\t', r: '\r', '\\': '\\' }[c] ?? m));
+    const execArgs = v => {
+      const args = []; let cur = null;
+      for (let i = 0; i < v.length; i++) {
+        const ch = v[i];
+        if (cur === null) { if (ch === ' ') continue; if (ch === '"') { cur = ''; continue; } const m = /^\S+/.exec(v.slice(i)); args.push(m[0].replace(/%%/g, '%')); i += m[0].length - 1; continue; }
+        if (ch === '\\' && '"`$\\'.includes(v[i + 1])) { cur += v[++i]; continue; }
+        if (ch === '"') { args.push(cur.replace(/%%/g, '%')); cur = null; continue; }
+        cur += ch;
+      }
+      assert.strictEqual(cur, null, 'balanced quotes');
+      return args;
+    };
+    const rawExec = /^Exec=(.*)$/m.exec(txt)[1];
+    assert.deepStrictEqual(execArgs(unvalue(rawExec)), [node, daemon, '--standby'], 'every path survives both escaping layers');
+    assert.ok(!/\\[^\\snrt]/.test(rawExec.replace(/\\\\/g, '')), 'only valid string-value escapes in Exec');
+    assert.strictEqual(unvalue(/^Path=(.*)$/m.exec(txt)[1]), path.posix.dirname(daemon), 'Path keeps its backslash');
+    for (const p of ['/home/a b/node', '/x/"q"', '/x/$HOME', '/x/`id`', '/x/100%', '/x/back\\slash', '/x/tab\there']) {
+      const t = a.desktopEntry(p, p + '/daemon.js');
+      assert.deepStrictEqual(execArgs(unvalue(/^Exec=(.*)$/m.exec(t)[1])), [p, p + '/daemon.js', '--standby'], p);
+    }
+    assert.match(txt, /^Terminal=false$/m);
+    assert.match(txt, /^NoDisplay=true$/m);
+    assert.ok(a.disable({ platform: 'linux' }));
+    assert.ok(!fs.existsSync(f));
+    assert.strictEqual(a.disable({ platform: 'linux' }), false);
+  } finally { delete process.env.CDP_XDG_AUTOSTART_DIR; }
+});
+
+test('installer (Linux .sh): invalid ID re-asked, install, desktop autostart, Enter keeps the saved ID', { skip: process.platform === 'linux' ? false : 'install-linux.sh – runs on the Linux CI jobs' }, () => {
+  relBuild();
+  const dir = path.join(relDir, 'linux', 'claude-code-discord-presence-9.8.7');
+  if (!fs.existsSync(dir)) unpackZip(relBuilt.linux, path.join(relDir, 'linux'));
+  assert.strictEqual(fs.statSync(path.join(dir, 'install-linux.sh')).mode & 0o111, 0o111, 'installer is executable after unpacking');
+  const home = path.join(tmp, `inst home linux o'k ż`); fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.claude', 'settings.json'), '{"theme":"dark"}');
+  const env = { ...sandboxEnv(home), PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin` };
+  let r = spawnSync('/bin/bash', [path.join(dir, 'install-linux.sh')], { env, input: 'abc\n123456789012345678\ny\n', encoding: 'utf8' });
+  assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /does not look like an Application ID/);
+  checkInstalled(home, '123456789012345678');
+  const desk = path.join(home, 'xdg-autostart', 'io.github.marcelbaka.claude-code-discord-presence.desktop');
+  assert.ok(fs.existsSync(desk), 'autostart answered y → XDG autostart entry');
+  assert.match(fs.readFileSync(desk, 'utf8'), /--standby/);
+  r = spawnSync('/bin/bash', [path.join(dir, 'install-linux.sh')], { env, input: '\nn\n', encoding: 'utf8' });
+  assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /Enter keeps your saved Application ID \(123456789012345678\)/);
+  checkInstalled(home, '123456789012345678');
 });

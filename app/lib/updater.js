@@ -16,7 +16,8 @@ function unpackCommand(zip, outDir, platform = process.platform) {
     return { cmd: path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'), args: ['-xf', zip, '-C', outDir] };
   }
   if (platform === 'darwin') return { cmd: '/usr/bin/ditto', args: ['-x', '-k', zip, outDir] };
-  return { cmd: 'unzip', args: ['-q', '-o', zip, '-d', outDir] };
+  // Linux (and anything else): the built-in extractor – `unzip` is often not installed
+  return { builtin: true };
 }
 
 function download(url, dest, hops = 0) {
@@ -76,8 +77,12 @@ async function update({ repo, appDir, ref = 'release', force = false, installed 
     const outDir = path.join(tmp, 'x');
     fs.mkdirSync(outDir);
     const u = unpackCommand(zip, outDir, platform);
-    const ex = run(u.cmd, u.args, { encoding: 'utf8', windowsHide: true, timeout: 120000 });
-    if (ex.error || ex.status !== 0) throw new Error(`Could not unpack the download (${u.cmd}): ${(ex.error && ex.error.message) || (ex.stderr || '').trim() || `exit ${ex.status}`}`);
+    if (u.builtin) {
+      try { require('./unzip').extract(zip, outDir); } catch (e) { throw new Error(`Could not unpack the download: ${e.message}`); }
+    } else {
+      const ex = run(u.cmd, u.args, { encoding: 'utf8', windowsHide: true, timeout: 120000 });
+      if (ex.error || ex.status !== 0) throw new Error(`Could not unpack the download (${u.cmd}): ${(ex.error && ex.error.message) || (ex.stderr || '').trim() || `exit ${ex.status}`}`);
+    }
     // GitHub ZIPs have one top folder (<repo>-main/); accept a flat archive too
     const top = [outDir, ...fs.readdirSync(outDir).map(n => path.join(outDir, n))].find(d => fs.existsSync(path.join(d, 'install.js')));
     if (!top) throw new Error(`The download does not contain install.js (unpacked: ${fs.readdirSync(outDir).slice(0, 10).join(', ') || 'nothing'}).`);

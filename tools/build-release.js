@@ -3,6 +3,7 @@
 // Builds the release downloads – no dependencies, no external tools:
 //   dist/claude-code-discord-presence-<version>-macos.zip    (install-macos.command, executable)
 //   dist/claude-code-discord-presence-<version>-windows.zip  (install-windows.cmd, CRLF)
+//   dist/claude-code-discord-presence-<version>-linux.zip    (install-linux.sh, executable)
 // Each ZIP has one top folder with the app, install.js, README, LICENSE and the installer.
 // Usage: node tools/build-release.js <version> [outDir]
 const fs = require('fs');
@@ -75,6 +76,7 @@ function build(version, outDir = path.join(ROOT, 'dist')) {
   const targets = {
     macos: [{ name: top, data: null, mode: 0o755 }, ...base, { name: top + 'install-macos.command', data: lf(installer('install-macos.command')), mode: 0o755 }],
     windows: [{ name: top, data: null, mode: 0o755 }, ...base, { name: top + 'install-windows.cmd', data: crlf(installer('install-windows.cmd')), mode: 0o644 }],
+    linux: [{ name: top, data: null, mode: 0o755 }, ...base, { name: top + 'install-linux.sh', data: lf(installer('install-linux.sh')), mode: 0o755 }],
   };
   fs.mkdirSync(outDir, { recursive: true });
   const out = {};

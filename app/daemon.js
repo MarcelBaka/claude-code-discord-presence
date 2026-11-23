@@ -807,9 +807,11 @@ async function tick() {
       log('config reloaded');
     }
     if (!cfg.enabled) return shutdown('integration disabled');
-    maybeCheckForUpdate();
 
+    // hook events first: the auto-update check below must see a prompt that just arrived
+    // (otherwise a session that has just started working could still look idle)
     const gotEvents = processInbox();
+    maybeCheckForUpdate();
     if (rotationPhase() !== lastPhase) { lastPhase = rotationPhase(); forceScan = true; }
     if (gotEvents || forceScan || Date.now() - lastScan >= T.scan) {
       lastScan = Date.now(); forceScan = false;

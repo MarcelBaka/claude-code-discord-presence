@@ -4,6 +4,23 @@ All notable changes to this project. Versions follow [semantic versioning](https
 each release's notes on GitHub are built from its section here plus the list of merged pull
 requests. Add your change under the version in `app/version.json` when you open a pull request.
 
+## 1.5.0 – 2026-11-23
+
+### Added
+- **Linux support** (x64 and arm64): a Linux download with `install-linux.sh` (finds Node from your
+  distribution, Snap, Linuxbrew, nvm, fnm, volta or asdf), start at login through an XDG autostart
+  entry (`~/.config/autostart`), and Discord from `.deb`/`.tar.gz`, Flatpak or Snap. The test suite
+  runs on Ubuntu x64 and arm64 in CI.
+- `update` unpacks downloads with a small built-in ZIP extractor on Linux, so `unzip` need not be
+  installed (unsafe paths in an archive are refused, file permissions kept).
+
+### Fixed
+- Linux with Node 24+: Claude Code installed with npm was not recognised in the process tree – Node
+  24 names its main thread "MainThread", which is what `ps` shows as the command name there. The
+  command line is now checked as well.
+- Auto-update: hook events are processed before the idle check, so a prompt that just arrived is
+  never missed.
+
 ## 1.4.0 – 2026-11-23
 
 ### Added

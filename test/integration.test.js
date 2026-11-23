@@ -862,6 +862,9 @@ test('auto-update: waits while Claude works (Esc counts as idle), runs the updat
     await hook({ ...base, hook_event_name: 'SessionStart', source: 'startup' });
     await hook({ ...base, hook_event_name: 'UserPromptSubmit', prompt: 'x', prompt_id: 'U1' });
     await waitFor(() => sessionsInStatus().some(s => s.id === 'au1'), 15000, 'session tracked');
+    // the prompt must have been processed (registry says working) before auto-update is turned on
+    const reg = () => { try { return (JSON.parse(fs.readFileSync(path.join(env.CDP_DATA_DIR, 'state', 'registry.json'), 'utf8')).sessions || []).find(s => s.id === 'au1'); } catch { return null; } };
+    await waitFor(() => { const s = reg(); return s && s.status === 'working'; }, 15000, 'prompt processed');
     setCfg({ autoUpdate: true });
     await sleep(2500);
     assert.strictEqual(callCount(), 0, 'no update while Claude is working');
