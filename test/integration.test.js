@@ -21,6 +21,7 @@ const env = {
   ...process.env,
   CDP_DATA_DIR: path.join(tmp, 'data'),
   CDP_CLAUDE_DIR: path.join(tmp, 'claude'),
+  CDP_CLAUDE_JSON: path.join(tmp, 'claude.json'), // never the real ~/.claude.json
   CDP_PIPE_NAME: IS_WIN ? `\\\\.\\pipe\\cdp-test-daemon-${rnd}` : path.join(sockDir, 'daemon.sock'),
   CDP_DISCORD_PIPE_PREFIX: IS_WIN ? `\\\\.\\pipe\\cdp-test-discord-${rnd}-` : path.join(sockDir, 'discord-ipc-'),
   CDP_FAST: '1',
@@ -943,6 +944,30 @@ test('desktop app: the card follows the session open in the window; resuming old
     await waitFor(() => discord.last().activity === null, 15000, 'cleared');
   } finally {
     delete env.CDP_WINDOW_STATE_FILE;
+    await discord.stop();
+  }
+});
+
+test('plan in the image tooltip: "Opus 5.5 · high effort · Claude Max 20x"; plan off hides it; never anything else from the account', { timeout: 60000 }, async () => {
+  await freshStart();
+  fs.writeFileSync(env.CDP_CLAUDE_JSON, JSON.stringify({ oauthAccount: { organizationType: 'claude_max', organizationRateLimitTier: 'default_claude_max_20x', emailAddress: 'secret-person@example.com', billingType: 'stripe_subscription' } }));
+  setCfg({ language: 'en', showModel: true, showPlan: true, largeImageKey: 'https://example.test/big.png' });
+  const discord = new FakeDiscord(); await discord.start();
+  try {
+    const repo = path.join(tmp, 'plan-repo'); fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+    const tr = path.join(tmp, 'projects', 'pl1.jsonl');
+    fs.writeFileSync(tr, JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(), effort: 'high', message: { id: 'pl1m', model: 'claude-opus-5-5', usage: { input_tokens: 0, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }) + '\n');
+    const p = fakeClaude('pl1', Date.now() - 1000);
+    await hook({ hook_event_name: 'SessionStart', session_id: 'pl1', transcript_path: tr, cwd: repo, source: 'startup' });
+    const a = await waitFor(() => { const l = discord.last(); return l && l.activity && l.activity.assets && l.activity.assets.large_text && l.activity; }, 15000, 'tooltip');
+    assert.strictEqual(a.assets.large_text, 'Opus 5.5 · high effort · Claude Max 20x');
+    for (const x of discord.activities) assert.ok(!/secret-person|stripe/.test(JSON.stringify(x)), 'only the plan name leaves the account data');
+    setCfg({ showPlan: false });
+    await waitFor(() => { const l = discord.last(); return l && l.activity && l.activity.assets && l.activity.assets.large_text === 'Opus 5.5 · high effort'; }, 15000, 'plan off');
+    p.kill('SIGKILL');
+    await waitFor(() => discord.last().activity === null, 15000, 'cleared');
+  } finally {
+    try { fs.rmSync(env.CDP_CLAUDE_JSON); } catch {}
     await discord.stop();
   }
 });

@@ -61,6 +61,7 @@ const help = `Discord Rich Presence for Claude Code
   node cli.js resume               show the card again
   node cli.js away <minutes|off>   say "Away" after waiting that long for your prompt
   node cli.js promo <on|off>       the "Get this plugin" button on your card
+  node cli.js plan <on|off>        your Claude plan (Pro, Max…) in the image tooltip
   node cli.js auto-update <on|off> install new releases automatically (when Claude is not working)
   node cli.js prices               date of the price table used for the cost estimate
   node cli.js version              installed version and the latest release on GitHub
@@ -305,6 +306,11 @@ async function showVersion(argv) {
       console.log(n ? `The card says "Away" after ${n} minute(s) of waiting for your prompt.` : 'Away state off.');
       break;
     }
+    case 'plan':
+      if (!['on', 'off'].includes(args[0])) fail('Usage: plan <on|off>');
+      editConfig(c => { c.showPlan = args[0] === 'on'; });
+      console.log(args[0] === 'on' ? `Your plan is shown in the image tooltip (${require('./lib/plan').currentPlan() || 'not found – signed in with an API key?'}).` : 'Plan hidden.');
+      break;
     case 'promo':
       if (!['on', 'off'].includes(args[0])) fail('Usage: promo <on|off>');
       editConfig(c => { c.promoButton = args[0] === 'on'; }); console.log('Done.');

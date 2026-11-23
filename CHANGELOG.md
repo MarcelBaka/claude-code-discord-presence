@@ -4,6 +4,13 @@ All notable changes to this project. Versions follow [semantic versioning](https
 each release's notes on GitHub are built from its section here plus the list of merged pull
 requests. Add your change under the version in `app/version.json` when you open a pull request.
 
+## 1.4.0 – 2026-11-23
+
+### Added
+- **Your Claude plan** in the image tooltip: `Opus 5.5 · xhigh effort · Claude Pro` (also *Max 5x*,
+  *Max 20x*, *Team*, *Enterprise*; the chat card's tooltip too). Read from `~/.claude.json` – only the
+  plan's name; the credentials file is never opened. `plan off` hides it.
+
 ## 1.3.1 – 2026-11-23
 
 ### Fixed
