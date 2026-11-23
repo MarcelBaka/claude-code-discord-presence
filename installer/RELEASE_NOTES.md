@@ -3,7 +3,7 @@
 | System | File | How to install |
 |---|---|---|
 | **macOS** (Apple Silicon and Intel) | `claude-code-discord-presence-*-macos.zip` | Unzip, then double-click **`install-macos.command`**. The first time macOS may refuse to open a downloaded script: right-click it → **Open** → **Open**. |
-| **Linux** (x64, arm64) | `claude-code-discord-presence-*-linux.zip` | Unzip, then in a terminal run **`bash install-linux.sh`** (or *Run in Terminal* from your file manager). |
+| **Linux** (x64, arm64) – *experimental* | `claude-code-discord-presence-*-linux.zip` | Unzip, then in a terminal run **`bash install-linux.sh`** (or *Run in Terminal* from your file manager). |
 | **Windows 10/11** | `claude-code-discord-presence-*-windows.zip` | Unzip (Extract All), then double-click **`install-windows.cmd`**. If SmartScreen appears: **More info** → **Run anyway**. |
 
 Before you start: install **Node.js 18+** (LTS) from https://nodejs.org – the installer checks for it.
