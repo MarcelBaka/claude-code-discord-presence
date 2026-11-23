@@ -40,7 +40,8 @@ const help = `Discord Rich Presence for Claude Code
   node cli.js status --json       same, as JSON
   node cli.js disable             turn off (clears the Discord activity, stops the background process)
   node cli.js enable              turn back on (starts on the next Claude event)
-  node cli.js set-app-id <ID>     save the Application ID from the Discord Developer Portal
+  node cli.js set-app-id <ID>     use your own Discord application (Developer Portal → General Information)
+  node cli.js set-app-id default  back to the built-in "ClaudeCode" application
   node cli.js alias <folder> <alias>   custom project name (folder = directory name or full path)
   node cli.js unalias <folder>
   node cli.js hide [<folder>]     hide the project name (no argument = all projects)
@@ -127,7 +128,7 @@ async function showVersion(argv) {
       if (args.includes('--json')) { console.log(JSON.stringify({ daemonRunning: alive, config: cfg, status: st }, null, 2)); break; }
       console.log(`Integration: ${cfg.enabled ? 'enabled' : 'DISABLED'}   version: ${require('./lib/version').installedVersion(C.P.app) || 'unknown'}`);
       if (st && st.update && st.update.updateAvailable) console.log(`Update available: ${st.update.latest} (installed ${st.update.installed}) – run: node cli.js update`);
-      console.log(`Application ID: ${cfg.applicationId ? cfg.applicationId : 'MISSING – run: node cli.js set-app-id <ID>'}`);
+      console.log(`Discord application: ${cfg.applicationIdIsDefault ? `built-in "ClaudeCode" (${cfg.applicationId}) – your own: node cli.js set-app-id <ID>` : `your own (${cfg.applicationId})`}`);
       console.log(`Autostart at sign-in: ${autostart.isEnabled() ? `on (${autostart.filePath()})` : 'off'}`);
       if (process.platform === 'darwin') console.log(`Claude desktop detection (macOS): app running/hidden/window on screen – always; minimized vs closed – ${cfg.macAccessibility ? 'via Accessibility (requested)' : 'unavailable (mac-accessibility off)'}; Code/chat tab – not detectable on macOS`);
       console.log(`Background process: ${alive ? `running (PID ${st && st.daemonPid})` : 'not running (starts on the next Claude event)'}`);
@@ -165,9 +166,10 @@ async function showVersion(argv) {
       break;
     case 'set-app-id': {
       const id = (args[0] || '').trim();
-      if (!/^\d{15,22}$/.test(id)) fail('The Application ID is a 17–20 digit number from Discord Developer Portal → General Information.');
+      if (id === 'default') { editConfig(c => { c.applicationId = ''; }); console.log('Using the built-in "ClaudeCode" Discord application.'); break; }
+      if (!/^\d{15,22}$/.test(id)) fail('The Application ID is a 17–20 digit number from Discord Developer Portal → General Information (or "default" for the built-in app).');
       editConfig(c => { c.applicationId = id; });
-      console.log('Application ID saved.');
+      console.log('Application ID saved – your own Discord application is used from now on.');
       break;
     }
     case 'alias':

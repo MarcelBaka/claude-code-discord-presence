@@ -16,8 +16,8 @@ and a live timer.
 <p align="center"><sub>The state line alternates between the session (<code>Working · 125.4k tokens · ~$2.31</code>) and today's totals; the badge shows whether Claude is working or waiting for you.</sub></p>
 
 It starts by itself whenever you run Claude Code, follows the session you are actually using and
-disappears when you close Claude. No bot, no account token, no dependencies – just the desktop
-Discord client's local RPC and your own public Application ID.
+disappears when you close Claude. No bot, no account token, no dependencies and **nothing to set up
+on Discord** – just the desktop Discord client's local RPC.
 
 > Not affiliated with Anthropic or Discord.
 
@@ -76,15 +76,7 @@ See [`docs/reports`](docs/reports) for exactly what was verified with a real Dis
 
 ## Quick start
 
-### 1. Create a Discord application (once, ~1 minute)
-
-1. Open the [Discord Developer Portal](https://discord.com/developers/applications) → **New Application**.
-2. Pick a name – it is shown as the activity title (“Watching **ClaudeCode**”).
-   Discord rejects some names containing “Claude”; `ClaudeCode` works.
-3. On **General Information**, copy the **Application ID**.
-4. *(Optional)* Upload an **App Icon** on the same page – it becomes the activity image automatically.
-
-### 2. Install
+### 1. Install
 
 **Easiest – download the installer** from the
 [latest release](https://github.com/MarcelBaka/claude-code-discord-presence/releases/latest)
@@ -96,8 +88,9 @@ See [`docs/reports`](docs/reports) for exactly what was verified with a real Dis
 - **Windows:** `claude-code-discord-presence-<version>-windows.zip` → Extract All → double-click
   `install-windows.cmd` (SmartScreen: **More info** → **Run anyway**).
 
-The installer finds Node (also Homebrew/nvm/volta installs on macOS), asks for the Application ID
-(press Enter to keep a saved one), installs and optionally turns on start at sign-in. The scripts
+The installer finds Node (also Homebrew/nvm/volta installs on macOS), asks for a Discord
+Application ID – **just press Enter** to use the built-in “ClaudeCode” app – installs and optionally
+turns on start at sign-in. The scripts
 are not code-signed; they only run `node install.js` from the unzipped folder.
 
 **Or from the command line:**
@@ -107,7 +100,7 @@ are not code-signed; they only run `node install.js` from the unzipped folder.
 ```powershell
 git clone https://github.com/MarcelBaka/claude-code-discord-presence.git
 cd claude-code-discord-presence
-node install.js --app-id <YOUR_APPLICATION_ID>
+node install.js
 ```
 
 **macOS** (Terminal):
@@ -115,14 +108,14 @@ node install.js --app-id <YOUR_APPLICATION_ID>
 ```bash
 git clone https://github.com/MarcelBaka/claude-code-discord-presence.git
 cd claude-code-discord-presence
-node install.js --app-id <YOUR_APPLICATION_ID>
+node install.js
 ```
 
 No `git`? Download the ZIP from GitHub (Code → Download ZIP), unpack it and run
-`node install.js --app-id …` inside the folder. No `sudo` is needed; everything goes to
+`node install.js` inside the folder. No `sudo` is needed; everything goes to
 `~/.claude/discord-presence` and `~/.claude/settings.json`.
 
-### 3. Restart Claude Code
+### 2. Restart Claude Code
 
 Restart any open Claude Code sessions so they load the new hooks. That's it – the activity
 appears on your profile as soon as a session starts or you send a prompt.
@@ -153,7 +146,8 @@ node ~/.claude/discord-presence/cli.js <command>
 |---|---|
 | `status` | Diagnostics: exact activity payload, Discord connection, sessions, token source and breakdown (`--json` for JSON) |
 | `disable` / `enable` | Turn the integration off (clears the activity) / back on |
-| `set-app-id <ID>` | Save or change the Application ID |
+| `set-app-id <ID>` | Use your own Discord application (see [Your own Discord application](#your-own-discord-application-optional)) |
+| `set-app-id default` | Back to the built-in “ClaudeCode” application |
 | `alias <folder> <name>` | Show a custom project name, e.g. `alias my-web-app "My Web App"` |
 | `hide [<folder>]` / `unhide [<folder>]` | Hide one project name, or all of them (“Project hidden”) |
 | `cost on\|off` | Show or hide the estimated cost |
@@ -189,7 +183,7 @@ The commands above edit it for you; [`config.example.json`](config.example.json)
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | `true` | Master switch |
-| `applicationId` | `""` | Discord Application ID |
+| `applicationId` | `""` | Your own Discord Application ID; empty = the built-in “ClaudeCode” app |
 | `language` | `"en"` | `en` or `pl` |
 | `aliases` | `{}` | `{ "folder-name or full path": "Display name" }` |
 | `hideProject` / `hiddenProjects` | `false` / `[]` | Hide all / selected project names |
@@ -214,6 +208,23 @@ The commands above edit it for you; [`config.example.json`](config.example.json)
 | `largeImageKey` / `largeImageText` | `""` / `"Claude Code"` | Image (empty = app icon) and its tooltip |
 | `showSessionCount` | `false` | Append the number of open sessions |
 | `logMaxBytes` | `524288` | Log size before rotation |
+
+## Your own Discord application (optional)
+
+Out of the box the card uses the built-in **ClaudeCode** Discord application, so the title reads
+“Watching **ClaudeCode**” with its icon and there is nothing to configure. An Application ID is a
+public identifier – anyone who sees the card can read it – not a password or token, and it gives
+nobody access to your account.
+
+Want your own title or icon?
+
+1. Open the [Discord Developer Portal](https://discord.com/developers/applications) → **New Application**.
+2. Pick a name – it is shown as the activity title. Discord rejects some names containing
+   “Claude” (e.g. with a space); `ClaudeCode` works.
+3. *(Optional)* Upload an **App Icon** on **General Information** – it becomes the card image.
+4. Copy the **Application ID** and run `cli.js set-app-id <ID>` (or paste it into the installer).
+
+`cli.js set-app-id default` switches back to the built-in application.
 
 ## Working, waiting, model and today
 
@@ -427,9 +438,9 @@ macOS they, and the daemon socket, are readable by your user only.
 
 | Problem | Try |
 |---|---|
-| Nothing on Discord | `cli.js status` – check `Application ID`, `Discord: connected` and the payload. Make sure *Settings → Activity Privacy → Share your activity* is on in Discord. |
+| Nothing on Discord | `cli.js status` – check `Discord: connected` and the payload. Make sure *Settings → Activity Privacy → Share your activity* is on in Discord. |
 | `Discord is not running` | Start the Discord desktop app; the integration reconnects by itself. |
-| `Invalid Client ID` in `logs` | Re-copy the Application ID: `cli.js set-app-id <ID>`. |
+| `Invalid Client ID` in `logs` | Your own Application ID is wrong – re-copy it (`cli.js set-app-id <ID>`) or go back to the built-in app: `cli.js set-app-id default`. |
 | Only VS Code is visible | Use the default type: `cli.js type watching`. |
 | Old app name or icon | Restart Discord (`Ctrl+R`); after changing the icon run `cli.js stop`. |
 | Hooks not firing | Restart Claude Code; re-run `node install.js` (safe to repeat). |

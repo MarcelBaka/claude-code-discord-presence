@@ -669,7 +669,7 @@ async function pushPresence(payload) {
 function writeStatus(p) {
   const st = {
     updatedAt: new Date().toISOString(), daemonPid: process.pid,
-    config: { enabled: cfg.enabled, applicationIdSet: !!cfg.applicationId, tokenCount: cfg.tokenCount, tokenScope: cfg.tokenScope, hideProject: cfg.hideProject },
+    config: { enabled: cfg.enabled, applicationIdSet: !!cfg.applicationId, applicationIdIsDefault: cfg.applicationIdIsDefault, tokenCount: cfg.tokenCount, tokenScope: cfg.tokenScope, hideProject: cfg.hideProject },
     discord: { state: discordState, error: discordError, nextRetryAt: nextRetryAt ? new Date(nextRetryAt).toISOString() : null, lastSentAt: lastSentAt ? new Date(lastSentAt).toISOString() : null },
     activityPayload: p ? p.activity : null,
     version: versionLib.installedVersion(), update: updateInfo,
@@ -758,7 +758,7 @@ async function main() {
   if (!res.ok) { if (res.reason !== 'running') log('not starting:', res.reason); process.exit(0); } // another process already runs
   listenAddr = addr; listenIno = res.ino == null ? null : res.ino;
   server.on('error', e => log('server error', e));
-  log('daemon started', process.version, process.platform, process.arch, 'appId', cfg.applicationId ? 'set' : 'MISSING', process.argv.includes('--standby') ? '(standby)' : '');
+  log('daemon started', process.version, process.platform, process.arch, 'appId', cfg.applicationIdIsDefault ? 'built-in' : 'custom', process.argv.includes('--standby') ? '(standby)' : '');
   loadRegistry();
   noSessionsSince = Date.now();
   setInterval(tick, T.tick);

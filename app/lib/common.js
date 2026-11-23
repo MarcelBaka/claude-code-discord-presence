@@ -58,6 +58,12 @@ function pipeName() {
   return p; // no safe short directory – listen fails and the reason is logged
 }
 
+// The built-in Discord application ("ClaudeCode", with its icon), used when config.json has
+// no applicationId of its own – so the card shows up right after installing, with no
+// Developer Portal setup. An Application ID is a public identifier (anyone who sees the
+// card can read it), not a secret. Your own app: cli.js set-app-id <ID>.
+const DEFAULT_APPLICATION_ID = '1574164973779681400';
+
 const DEFAULT_CONFIG = {
   enabled: true,
   language: 'en',
@@ -121,7 +127,10 @@ function loadConfig() {
   if (!Array.isArray(cfg.hiddenProjects)) cfg.hiddenProjects = [];
   if (!['all', 'no_cache_read', 'output'].includes(cfg.tokenCount)) cfg.tokenCount = 'no_cache_read';
   if (!['launch', 'conversation'].includes(cfg.tokenScope)) cfg.tokenScope = 'launch';
-  cfg.applicationId = String(cfg.applicationId || '').trim();
+  // your own Application ID wins; otherwise the built-in one (CDP_DEFAULT_APP_ID only for tests)
+  cfg.customApplicationId = /^\d{15,22}$/.test(String(cfg.applicationId || '').trim()) ? String(cfg.applicationId).trim() : '';
+  cfg.applicationId = cfg.customApplicationId || process.env.CDP_DEFAULT_APP_ID || DEFAULT_APPLICATION_ID;
+  cfg.applicationIdIsDefault = !cfg.customApplicationId;
   if (!['en', 'pl'].includes(cfg.language)) cfg.language = 'en';
   if (!['playing', 'listening', 'watching', 'competing'].includes(cfg.activityType)) cfg.activityType = 'watching';
   if (!['rotate', 'tooltip', 'off'].includes(cfg.showToday)) cfg.showToday = cfg.showToday === false ? 'off' : 'rotate';
@@ -165,4 +174,4 @@ const STRINGS = {
 };
 function strings(lang) { return STRINGS[lang] || STRINGS.en; }
 
-module.exports = { P, pipeName, privateDir, ensurePrivateDirs, SUN_PATH_MAX, DEFAULT_CONFIG, ensureDir, readJson, writeJsonAtomic, loadConfig, log, setLogMax, formatTokens, strings };
+module.exports = { P, pipeName, privateDir, ensurePrivateDirs, SUN_PATH_MAX, DEFAULT_APPLICATION_ID, DEFAULT_CONFIG, ensureDir, readJson, writeJsonAtomic, loadConfig, log, setLogMax, formatTokens, strings };

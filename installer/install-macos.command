@@ -32,20 +32,25 @@ echo "Node.js: $NODE ($("$NODE" -v))"
 CFG="${CDP_INSTALL_DIR:-$HOME/.claude/discord-presence}/config.json"
 SAVED="$("$NODE" -e 'try{process.stdout.write(String(require(process.argv[1]).applicationId||""))}catch{}' "$CFG" 2>/dev/null)"
 echo
-echo "Discord Application ID – Developer Portal → your application → General Information."
-if [ -n "$SAVED" ]; then echo "Press Enter to keep the saved one ($SAVED)."; fi
+echo "Discord application: just press Enter to use the built-in \"ClaudeCode\" app – nothing to set up."
+echo "Or paste the Application ID of your own app (Developer Portal → General Information)."
+if [ -n "$SAVED" ]; then echo "Enter keeps your saved Application ID ($SAVED)."; fi
 APP_ID=""
+OK=""
 for _ in 1 2 3; do
-  read -r -p "Application ID: " APP_ID || APP_ID=""
+  read -r -p "Application ID (Enter = default): " APP_ID || APP_ID=""
   APP_ID="$(printf '%s' "$APP_ID" | tr -d '[:space:]')"
-  [ -z "$APP_ID" ] && [ -n "$SAVED" ] && APP_ID="$SAVED"
-  if printf '%s' "$APP_ID" | grep -Eq '^[0-9]{15,22}$'; then break; fi
-  echo "That does not look like an Application ID (a 17–20 digit number)."; APP_ID=""
+  if [ -z "$APP_ID" ] || printf '%s' "$APP_ID" | grep -Eq '^[0-9]{15,22}$'; then OK=1; break; fi
+  echo "That does not look like an Application ID (a 17–20 digit number). Press Enter for the default."; APP_ID=""
 done
-[ -z "$APP_ID" ] && { echo "No valid Application ID – nothing was installed."; finish 1; }
+[ -z "$OK" ] && { echo "No valid Application ID – nothing was installed."; finish 1; }
 
 echo
-"$NODE" install.js --app-id "$APP_ID" || { echo; echo "Installation failed – see the messages above."; finish 1; }
+if [ -n "$APP_ID" ]; then
+  "$NODE" install.js --app-id "$APP_ID" || { echo; echo "Installation failed – see the messages above."; finish 1; }
+else
+  "$NODE" install.js || { echo; echo "Installation failed – see the messages above."; finish 1; }
+fi
 
 echo
 read -r -p "Start automatically at sign-in (LaunchAgent)? [y/N] " AUTO || AUTO=""
