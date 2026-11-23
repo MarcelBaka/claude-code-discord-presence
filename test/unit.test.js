@@ -875,8 +875,29 @@ test('autostart on Linux: XDG autostart .desktop entry with quoted paths; remove
     assert.ok(a.isEnabled({ platform: 'linux' }));
     const txt = fs.readFileSync(f, 'utf8');
     assert.match(txt, /^\[Desktop Entry\]\nType=Application\n/);
-    const exec = /^Exec=(.*)$/m.exec(txt)[1];
-    assert.strictEqual(exec, `"/home/o'brien/.nvm/versions/node/v22.1.0/bin/node" "/home/Zoë \\"Q\\" \\$HOME \\\`x\\\` 100%%\\\\d/.claude/discord-presence/daemon.js" --standby`);
+    // Read it back the way desktop-entry readers do: 1) string-value escapes (\\ \s \n \t \r),
+    // 2) Exec argument parsing (double quotes with \" \` \$ \\ inside, %% → %).
+    const unvalue = v => v.replace(/\\(.)/g, (m, c) => ({ s: ' ', n: '\n', t: '\t', r: '\r', '\\': '\\' }[c] ?? m));
+    const execArgs = v => {
+      const args = []; let cur = null;
+      for (let i = 0; i < v.length; i++) {
+        const ch = v[i];
+        if (cur === null) { if (ch === ' ') continue; if (ch === '"') { cur = ''; continue; } const m = /^\S+/.exec(v.slice(i)); args.push(m[0].replace(/%%/g, '%')); i += m[0].length - 1; continue; }
+        if (ch === '\\' && '"`$\\'.includes(v[i + 1])) { cur += v[++i]; continue; }
+        if (ch === '"') { args.push(cur.replace(/%%/g, '%')); cur = null; continue; }
+        cur += ch;
+      }
+      assert.strictEqual(cur, null, 'balanced quotes');
+      return args;
+    };
+    const rawExec = /^Exec=(.*)$/m.exec(txt)[1];
+    assert.deepStrictEqual(execArgs(unvalue(rawExec)), [node, daemon, '--standby'], 'every path survives both escaping layers');
+    assert.ok(!/\\[^\\snrt]/.test(rawExec.replace(/\\\\/g, '')), 'only valid string-value escapes in Exec');
+    assert.strictEqual(unvalue(/^Path=(.*)$/m.exec(txt)[1]), path.posix.dirname(daemon), 'Path keeps its backslash');
+    for (const p of ['/home/a b/node', '/x/"q"', '/x/$HOME', '/x/`id`', '/x/100%', '/x/back\\slash', '/x/tab\there']) {
+      const t = a.desktopEntry(p, p + '/daemon.js');
+      assert.deepStrictEqual(execArgs(unvalue(/^Exec=(.*)$/m.exec(t)[1])), [p, p + '/daemon.js', '--standby'], p);
+    }
     assert.match(txt, /^Terminal=false$/m);
     assert.match(txt, /^NoDisplay=true$/m);
     assert.ok(a.disable({ platform: 'linux' }));

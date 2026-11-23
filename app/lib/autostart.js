@@ -73,19 +73,26 @@ function xdgAutostartDir() {
   return path.join(base, 'autostart');
 }
 
-// Desktop Entry Exec quoting: each argument in double quotes; inside, \" ` $ \\ are
-// backslash-escaped, and % (field codes) is doubled.
+// Desktop Entry Exec quoting (first layer): each argument in double quotes; inside, " ` $ \
+// are backslash-escaped, and % (field codes) is doubled.
 function execArg(s) { return '"' + String(s).replace(/["`$\\]/g, c => '\\' + c).replace(/%/g, '%%') + '"'; }
 
+// Desktop Entry string-value escaping (second layer): readers (GLib, KDE…) first turn
+// \\ \s \n \t \r in a value back into characters, and only then parse Exec's arguments –
+// so every backslash of the quoted command (and of Path) is written doubled. Newlines and
+// tabs become \n / \t, and a leading space \s, so a value never spans or loses characters.
+function desktopValue(s) {
+  return String(s).replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t').replace(/^ /, '\\s');
+}
+
 function desktopEntry(nodePath, daemonPath) {
-  const line = v => String(v).replace(/[\r\n]/g, ' ');
   return [
     '[Desktop Entry]',
     'Type=Application',
     'Name=Claude Code Discord Presence',
     'Comment=Discord Rich Presence for Claude Code – background process (remove with: node cli.js autostart off)',
-    `Exec=${line(execArg(nodePath))} ${line(execArg(daemonPath))} --standby`,
-    `Path=${line(path.posix.dirname(daemonPath))}`,
+    `Exec=${desktopValue(`${execArg(nodePath)} ${execArg(daemonPath)} --standby`)}`,
+    `Path=${desktopValue(path.posix.dirname(daemonPath))}`,
     'Terminal=false',
     'NoDisplay=true',
     'X-GNOME-Autostart-enabled=true',
@@ -165,4 +172,4 @@ function disable(o) {
   return false;
 }
 
-module.exports = { FILE_NAME, LABEL, startupDir, launchAgentsDir, xdgAutostartDir, plistXml, desktopEntry, execArg, filePath, isEnabled, enable, disable };
+module.exports = { FILE_NAME, LABEL, startupDir, launchAgentsDir, xdgAutostartDir, plistXml, desktopEntry, desktopValue, execArg, filePath, isEnabled, enable, disable };
