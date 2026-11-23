@@ -397,7 +397,13 @@ async function freshStart() {
   setCfg({ enabled: true, autostart: false, showChat: false, showStatus: false, showModel: false, showToday: 'off', language: 'pl' });
   for (const p of procs) { try { p.kill('SIGKILL'); } catch {} }
   if (await daemonAlive()) {
-    await new Promise(r => { const s = net.createConnection(env.CDP_PIPE_NAME); s.on('connect', () => s.end('stop\n')); s.on('close', r); s.on('error', r); });
+    // read the reply (an unread, paused socket never emits 'close') and never wait forever
+    await new Promise(r => {
+      const s = net.createConnection(env.CDP_PIPE_NAME);
+      const t = setTimeout(() => { s.destroy(); r(); }, 3000);
+      const done = () => { clearTimeout(t); r(); };
+      s.on('connect', () => s.end('stop\n')); s.on('data', () => {}); s.on('close', done); s.on('error', done);
+    });
     await waitFor(async () => !(await daemonAlive()), 10000, 'previous daemon stopped');
   }
 }
