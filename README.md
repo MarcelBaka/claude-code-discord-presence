@@ -11,9 +11,14 @@ Show what you are building with **Claude Code** on your Discord profile – the 
 Claude is working or waiting for you, the real number of tokens used, an estimated cost, the model
 and a live timer.
 
-<p align="center"><img src="assets/screenshot.png" alt="Claude Code activity on a Discord profile: project, today's tokens and cost, waiting badge and timer" width="444"></p>
+<table align="center">
+  <tr>
+    <td align="center"><img src="assets/screenshot-working.png" alt="Discord card while Claude is working: project, today's tokens and cost, green lightning badge and timer" width="400"><br><sub><b>Claude is working</b> – green badge</sub></td>
+    <td align="center"><img src="assets/screenshot.png" alt="Discord card while Claude waits for you: project, today's tokens and cost, amber clock badge and timer" width="400"><br><sub><b>Waiting for your prompt</b> – amber badge</sub></td>
+  </tr>
+</table>
 
-<p align="center"><sub>The state line alternates between the session (<code>Working · 125.4k tokens · ~$2.31</code>) and today's totals; the badge shows whether Claude is working or waiting for you.</sub></p>
+<p align="center"><sub>The state line alternates between the session (<code>Editing files · 125.4k tokens · ~$2.31</code>) and today's totals; the badge shows whether Claude is working or waiting for you.</sub></p>
 
 It starts by itself whenever you run Claude Code, follows the session you are actually using and
 disappears when you close Claude. No bot, no account token, no dependencies and **nothing to set up
