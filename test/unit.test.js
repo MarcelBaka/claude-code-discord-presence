@@ -806,3 +806,29 @@ test('configReadable: a config.json caught mid-write is not read as "all default
     if (before === null) fs.rmSync(f, { force: true }); else fs.writeFileSync(f, before);
   }
 });
+
+test('plan: subscription name from ~/.claude.json only (Pro, Max 5x/20x, Team, Enterprise), nothing else', () => {
+  const P = require('../app/lib/plan');
+  assert.strictEqual(P.planLabel({ organizationType: 'claude_pro', organizationRateLimitTier: 'default_claude_ai' }), 'Claude Pro');
+  assert.strictEqual(P.planLabel({ organizationType: 'claude_max', organizationRateLimitTier: 'default_claude_max_20x' }), 'Claude Max 20x');
+  assert.strictEqual(P.planLabel({ organizationType: 'claude_max', userRateLimitTier: 'default_claude_max_5x' }), 'Claude Max 5x');
+  assert.strictEqual(P.planLabel({ organizationType: 'claude_max' }), 'Claude Max');
+  assert.strictEqual(P.planLabel({ organizationType: 'claude_team' }), 'Claude Team');
+  assert.strictEqual(P.planLabel({ organizationType: 'claude_enterprise' }), 'Claude Enterprise');
+  assert.strictEqual(P.planLabel({ organizationType: 'claude_new_tier' }), 'Claude New Tier');
+  assert.strictEqual(P.planLabel({ organizationType: '"><img src=x>' }), null, 'only simple claude_* values');
+  assert.strictEqual(P.planLabel({}), null);
+  assert.strictEqual(P.planLabel(undefined), null, 'API-key login: no oauthAccount → nothing shown');
+
+  const f = path.join(tmp, 'plan-claude.json');
+  process.env.CDP_CLAUDE_JSON = f;
+  try {
+    assert.strictEqual(P.currentPlan(1), null, 'no file → nothing');
+    fs.writeFileSync(f, JSON.stringify({ oauthAccount: { organizationType: 'claude_pro', emailAddress: 'someone@example.com', billingType: 'x' } }));
+    assert.strictEqual(P.currentPlan(2), 'Claude Pro');
+    fs.writeFileSync(f, '{"oauthAccount": {"organizationType": "claude_max"'); // mid-write
+    assert.strictEqual(P.currentPlan(3e6), 'Claude Pro', 'a half-written file keeps the last plan');
+  } finally { delete process.env.CDP_CLAUDE_JSON; }
+  // the credentials file (tokens) is never read
+  assert.ok(!/credentials/i.test(fs.readFileSync(path.join(__dirname, '..', 'app', 'lib', 'plan.js'), 'utf8').replace(/\/\/.*$/gm, '')));
+});

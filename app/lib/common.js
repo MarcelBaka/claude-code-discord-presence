@@ -84,6 +84,7 @@ const DEFAULT_CONFIG = {
   autoUpdate: false,
   updatePrices: true,
   promoButton: true,
+  showPlan: true,
   awayAfterMinutes: 0,
   pausedUntil: 0,
   showModel: true,

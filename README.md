@@ -38,7 +38,7 @@ on Discord** – just the desktop Discord client's local RPC.
   `Browsing the web`, `Running agents`… instead of a plain “Working”. Only the kind of tool is
   shown, never file names, commands or URLs.
 - **Estimated cost** at Anthropic API list prices, per model (Opus, Sonnet, Haiku, Fable…).
-- **Model and effort** in the image tooltip, e.g. `Opus 5.5 · high effort`.
+- **Model, effort and your plan** in the image tooltip, e.g. `Opus 5.5 · xhigh effort · Claude Pro`.
 - **Today's totals** across all your sessions and projects, e.g. `Today: 1.2M tokens · ~$25`,
   rotating with the session line.
 - **Project buttons** – an optional `View on GitHub` button for the projects you choose, plus a
@@ -162,6 +162,7 @@ node ~/.claude/discord-presence/cli.js <command>
 | `cost on\|off` | Show or hide the estimated cost |
 | `status-icon on\|off` | Show whether Claude is working or waiting for you |
 | `model on\|off` | Model and effort in the image tooltip |
+| `plan on\|off` | Your Claude plan (Pro, Max 5x/20x, Team, Enterprise) in the image tooltip |
 | `today <rotate\|tooltip\|off>` | Today's totals: alternate with the session line every 20 s, show in the tooltip, or hide |
 | `link <folder> [url]` | Add a button for a project; without a URL the Git `origin` remote is used |
 | `unlink <folder>` | Remove the button |
@@ -213,6 +214,7 @@ The commands above edit it for you; [`config.example.json`](config.example.json)
 | `autoUpdate` | `false` | Install new releases automatically (`auto-update on`) |
 | `updatePrices` | `true` | Refresh the price table from this repository once a day |
 | `promoButton` | `true` | *Get this plugin* button linking to `updateRepo` |
+| `showPlan` | `true` | Your Claude plan in the image tooltip |
 | `awayAfterMinutes` | `0` | Minutes without a prompt before the card says *Away* (0 = off) |
 | `pausedUntil` | `0` | Set by `pause` / `resume` (time in ms, `-1` = until resume) |
 | `showModel` | `true` | Model and effort in the image tooltip |
@@ -262,6 +264,10 @@ Want your own title or icon?
   “Working” falls back to “Waiting”. The badge images live in [`assets/`](assets) and are loaded
   by Discord from GitHub.
 - **Model and effort** come from the latest reply in the transcript (`message.model`, `effort`).
+- **Plan** (Claude Pro, Max 5x/20x, Team, Enterprise) is read from `~/.claude.json` →
+  `oauthAccount` (`organizationType` and the rate-limit tier). Only the plan's name is used – not
+  your e-mail, billing or dates – and the credentials file with the tokens is never opened. Signed
+  in with an API key instead: nothing is shown. `plan off` hides it.
 - **Today** sums every Claude Code transcript changed since local midnight – all projects, closed
   sessions and subagents too – with the same deduplication and token/cost rules as the session.
 
@@ -470,7 +476,7 @@ To enable the extra detection:
 
 ## Privacy
 
-Sent to Discord: project name or alias (or “Project hidden”), Claude's working/waiting state,
+Sent to Discord: project name or alias (or “Project hidden”), your Claude plan's name (`plan off`), Claude's working/waiting state,
 token counts (session and today), estimated cost, model and effort, start time, images, and the
 project buttons you add yourself plus the *Get this plugin* link (`promo off`). **Never** prompts, responses, file contents, paths or repository URLs. The hook
 does not read prompt text, and nothing in this project ever calls a model.

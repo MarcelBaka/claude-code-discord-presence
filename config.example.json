@@ -19,6 +19,7 @@
   "autoUpdate": false,
   "updatePrices": true,
   "promoButton": true,
+  "showPlan": true,
   "awayAfterMinutes": 0,
   "showModel": true,
   "showToday": "rotate",

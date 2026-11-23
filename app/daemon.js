@@ -14,6 +14,7 @@ const pricing = require('./lib/pricing');
 const { formatCost } = pricing;
 const { DailyUsage } = require('./lib/daily');
 const versionLib = require('./lib/version');
+const planLib = require('./lib/plan');
 
 // ---------- update check (once a day, anonymous request to the public GitHub API) ----------
 let updateInfo = null, updateCheckAt = 0, updateChecking = false;
@@ -545,7 +546,8 @@ function chatPresence() {
   const activity = { details: L.chat, timestamps: { start: Math.floor(chatSince || Date.now()) } };
   if (ACT_TYPES[cfg.activityType]) activity.type = ACT_TYPES[cfg.activityType];
   const img = largeImage();
-  if (img) activity.assets = { large_image: img, large_text: 'Claude' };
+  const chatPlan = cfg.showPlan ? planLib.currentPlan() : null;
+  if (img) activity.assets = { large_image: img, large_text: chatPlan || 'Claude' };
   const promo = promoButton(L);
   if (promo) activity.buttons = [promo];
   return { activity, debug: { mode: 'chat', chatSince: new Date(chatSince || Date.now()).toISOString(), note: 'regular Claude chat: no local token data' } };
@@ -654,6 +656,9 @@ function computePresence() {
   // big icon tooltip: model and effort (+ today's totals when not rotating)
   const tip = [];
   if (cfg.showModel && su && su.lastModel) tip.push(modelName(su.lastModel) + (su.lastEffort ? ` · ${su.lastEffort} ${L.effort}` : ''));
+  // the Claude subscription (Pro, Max 20x, …) from ~/.claude.json – showPlan: false hides it
+  const plan = cfg.showPlan ? planLib.currentPlan() : null;
+  if (plan) tip.push(plan);
   if (todayText && cfg.showToday === 'tooltip') tip.push(todayText);
   const largeText = (tip.join(' · ') || cfg.largeImageText || 'Claude Code').slice(0, 128);
   const img = largeImage();
