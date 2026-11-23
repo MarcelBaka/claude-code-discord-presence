@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 
 const APP_DIR = path.resolve(__dirname, '..');
 const DATA_DIR = process.env.CDP_DATA_DIR || APP_DIR;
@@ -20,11 +21,41 @@ const P = {
   claudeSessions: path.join(CLAUDE_DIR, 'sessions'),
 };
 
+// Address of the background process – the same function is used by the hook, the daemon,
+// the CLI, the installer and the uninstaller.
+// Windows: a per-user named pipe. macOS/Linux: a Unix socket in the private state
+// directory; when that path is longer than the sun_path limit (104 bytes on macOS,
+// 108 on Linux), a socket in a per-user 0700 directory under /tmp named after a hash of
+// the data directory (deterministic, so every component finds the same address).
+const SUN_PATH_MAX = 100;
+function uidTag() { return typeof process.getuid === 'function' ? String(process.getuid()) : (os.userInfo().username || 'user').replace(/[^A-Za-z0-9_-]/g, '_'); }
+
+// Creates (or accepts) a directory only if it is a real directory owned by this user
+// with no access for group/others. Never follows a symlink planted by someone else.
+function privateDir(dir) {
+  try { fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch (e) { if (e.code !== 'EEXIST') return false; }
+  try {
+    const st = fs.lstatSync(dir);
+    if (!st.isDirectory() || st.isSymbolicLink()) return false;
+    if (process.platform === 'win32') return true;
+    if (typeof process.getuid === 'function' && st.uid !== process.getuid()) return false;
+    if (st.mode & 0o077) fs.chmodSync(dir, 0o700);
+    return true;
+  } catch { return false; }
+}
+
 function pipeName() {
   if (process.env.CDP_PIPE_NAME) return process.env.CDP_PIPE_NAME;
   const user = (os.userInfo().username || 'user').replace(/[^A-Za-z0-9_-]/g, '_');
   if (process.platform === 'win32') return `\\\\.\\pipe\\claude-code-discord-presence-${user}`;
-  return path.join(DATA_DIR, 'state', 'daemon.sock');
+  const p = path.join(DATA_DIR, 'state', 'daemon.sock');
+  if (Buffer.byteLength(p) <= SUN_PATH_MAX) return p;
+  const h = crypto.createHash('sha256').update(path.resolve(DATA_DIR)).digest('hex').slice(0, 16);
+  const base = process.env.CDP_SOCKET_BASE || '/tmp';
+  for (const d of [path.join(base, `cdp-${uidTag()}`), path.join(base, `cdp-${uidTag()}-${h.slice(0, 8)}`)]) {
+    if (privateDir(d)) return path.join(d, `${h}.sock`);
+  }
+  return p; // no safe short directory – listen fails and the reason is logged
 }
 
 const DEFAULT_CONFIG = {
@@ -50,12 +81,15 @@ const DEFAULT_CONFIG = {
   updateRepo: 'MarcelBaka/claude-code-discord-presence',
   pricing: {},
   hideWhenWindowClosed: true,
+  macAccessibility: false,
   largeImageKey: '',
   largeImageText: 'Claude Code',
   logMaxBytes: 524288,
 };
 
 function ensureDir(d) { fs.mkdirSync(d, { recursive: true }); }
+// state/ and logs/ hold session metadata – private to the user on macOS/Linux
+function ensurePrivateDirs() { for (const d of [path.dirname(P.registry), P.inbox, P.logDir]) { ensureDir(d); if (process.platform !== 'win32') { try { fs.chmodSync(d, 0o700); } catch {} } } }
 
 function readJson(file, fallback) {
   try {
@@ -129,4 +163,4 @@ const STRINGS = {
 };
 function strings(lang) { return STRINGS[lang] || STRINGS.en; }
 
-module.exports = { P, pipeName, DEFAULT_CONFIG, ensureDir, readJson, writeJsonAtomic, loadConfig, log, setLogMax, formatTokens, strings };
+module.exports = { P, pipeName, privateDir, ensurePrivateDirs, SUN_PATH_MAX, DEFAULT_CONFIG, ensureDir, readJson, writeJsonAtomic, loadConfig, log, setLogMax, formatTokens, strings };

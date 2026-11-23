@@ -59,17 +59,27 @@ function stripOurs(data) {
   return out;
 }
 
-function commandFor(nodePath, hookPath, ev) {
-  const q = p => `"${p.replace(/\\/g, '/')}"`;
-  return `${q(nodePath)} ${q(hookPath)} ${ev}`;
+// The hook command is run by Claude Code through a shell: `sh -c` on macOS/Linux, Git Bash
+// (or PowerShell) on Windows.
+// macOS/Linux: every argument in single quotes, a single quote written as '\'' – the only
+//   POSIX quoting in which $, `, ", \, !, spaces and non-ASCII characters are all literal.
+// Windows: forward slashes in double quotes (works in Git Bash and PowerShell; Windows paths
+//   cannot contain ").
+function shQuote(v) { return `'${String(v).replace(/'/g, `'\\''`)}'`; }
+function commandFor(nodePath, hookPath, ev, platform = process.platform) {
+  if (platform === 'win32') {
+    const q = p => `"${p.replace(/\\/g, '/')}"`;
+    return `${q(nodePath)} ${q(hookPath)} ${ev}`;
+  }
+  return `${shQuote(nodePath)} ${shQuote(hookPath)} ${ev}`;
 }
 
-function addOurs(data, nodePath, hookPath) {
+function addOurs(data, nodePath, hookPath, platform = process.platform) {
   const out = stripOurs(data);
   out.hooks = out.hooks && typeof out.hooks === 'object' ? out.hooks : {};
   for (const ev of EVENTS) {
     if (!Array.isArray(out.hooks[ev])) out.hooks[ev] = [];
-    out.hooks[ev].push({ hooks: [{ type: 'command', command: commandFor(nodePath, hookPath, ev), timeout: 10 }] });
+    out.hooks[ev].push({ hooks: [{ type: 'command', command: commandFor(nodePath, hookPath, ev, platform), timeout: 10 }] });
   }
   return out;
 }
@@ -80,4 +90,4 @@ function countOurs(data) {
   return n;
 }
 
-module.exports = { EVENTS, settingsPath, readSettings, backup, writeSettings, stripOurs, addOurs, countOurs, isOurs, commandFor };
+module.exports = { shQuote, EVENTS, settingsPath, readSettings, backup, writeSettings, stripOurs, addOurs, countOurs, isOurs, commandFor };

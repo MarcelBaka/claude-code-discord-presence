@@ -10,16 +10,34 @@ permissions:
 
 jobs:
   test:
-    runs-on: windows-latest
+    name: ${{ matrix.label }} · Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        node: [18, 20, 22]
+        include:
+          # Windows (unchanged coverage)
+          - { os: windows-latest, label: Windows x64, arch: x64, node: 18 }
+          - { os: windows-latest, label: Windows x64, arch: x64, node: 20 }
+          - { os: windows-latest, label: Windows x64, arch: x64, node: 22 }
+          # macOS on Apple Silicon (macos-latest = arm64)
+          - { os: macos-latest, label: macOS Apple Silicon, arch: arm64, node: 20 }
+          - { os: macos-latest, label: macOS Apple Silicon, arch: arm64, node: 22 }
+          - { os: macos-latest, label: macOS Apple Silicon, arch: arm64, node: 24 }
+          # macOS on Intel (x64 image)
+          - { os: macos-15-intel, label: macOS Intel, arch: x64, node: 22 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+      - name: Runner architecture
+        shell: bash
+        run: |
+          uname -a
+          node -p "process.platform + ' ' + process.arch + ' ' + process.version"
+          # fail if the job does not run on the architecture it claims to cover
+          test "$(node -p process.arch)" = "${{ matrix.arch }}"
       - name: Syntax check
         shell: bash
         run: for f in install.js app/*.js app/lib/*.js; do node --check "$f"; done

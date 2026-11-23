@@ -1,0 +1,93 @@
+// Claude desktop app watcher for macOS – JavaScript for Automation, run by
+//   /usr/bin/osascript -l JavaScript window-watch-mac.jxa <useAccessibility 0|1>
+// Prints one JSON line every ~1.5 s to stdout and exits when the daemon closes the pipe.
+//
+// Without any permission (AppKit / CoreGraphics):
+//   running   Claude.app (bundle id com.anthropic.claudefordesktop) is running
+//   hidden    the app is hidden (Cmd+H)
+//   onscreen  number of normal (layer 0, not tiny) windows of the app currently on screen
+// With Accessibility (opt-in, System Events): per window only the minimized flag, and the
+// tab mode derived from the window title inside this script. The title itself, and any
+// conversation content, never leaves this process.
+ObjC.import('AppKit');
+ObjC.import('CoreGraphics');
+ObjC.import('Foundation');
+
+var BUNDLE = 'com.anthropic.claudefordesktop';
+var axDenied = null;
+
+function findApp() {
+  var apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier(BUNDLE);
+  for (var i = 0; i < apps.count; i++) {
+    var a = apps.objectAtIndex(i);
+    if (!a.terminated) return a;
+  }
+  return null;
+}
+
+function onscreenWindows(pid) {
+  var list = ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly | $.kCGWindowListExcludeDesktopElements, 0));
+  var n = 0;
+  for (var i = 0; i < list.count; i++) {
+    var d = list.objectAtIndex(i);
+    if (ObjC.unwrap(d.objectForKey('kCGWindowOwnerPID')) !== pid) continue;
+    if (ObjC.unwrap(d.objectForKey('kCGWindowLayer')) !== 0) continue;
+    var alpha = ObjC.unwrap(d.objectForKey('kCGWindowAlpha'));
+    if (alpha !== undefined && alpha <= 0) continue;
+    var b = d.objectForKey('kCGWindowBounds');
+    var w = ObjC.unwrap(b.objectForKey('Width')), h = ObjC.unwrap(b.objectForKey('Height'));
+    if (w >= 200 && h >= 200) n++;
+  }
+  return n;
+}
+
+function modeFromTitle(t) {
+  t = String(t || '');
+  if (/ - Claude Code$/.test(t)) return 'code';
+  if (t === 'Claude' || / - Claude$/.test(t)) return 'chat';
+  return 'unknown';
+}
+
+function accessibility(pid) {
+  if (axDenied) return { status: 'denied', code: axDenied };
+  try {
+    var se = Application('System Events');
+    var procs = se.processes.whose({ unixId: pid });
+    if (!procs.length) return { status: 'ok', windows: [], mode: 'unknown' };
+    var p = procs[0];
+    var wins = p.windows();
+    var out = [], mode = 'unknown';
+    for (var i = 0; i < wins.length; i++) {
+      var w = wins[i], min = false;
+      try { min = !!w.attributes.byName('AXMinimized').value(); } catch (e) {}
+      out.push({ minimized: min });
+      if (!min && mode === 'unknown') { try { mode = modeFromTitle(w.name()); } catch (e) {} }
+    }
+    return { status: 'ok', windows: out, mode: mode };
+  } catch (e) {
+    // -1743: Automation (System Events) denied; -25211 / -1719: Accessibility denied.
+    // Remember it: no retries, no repeated permission prompts.
+    axDenied = String(e.errorNumber || e.message || 'error');
+    return { status: 'denied', code: axDenied };
+  }
+}
+
+function probe(useAx) {
+  var app = findApp();
+  if (!app) return { running: false };
+  var pid = app.processIdentifier;
+  var r = { running: true, pid: pid, hidden: !!app.hidden, active: !!app.active, onscreen: onscreenWindows(pid) };
+  r.ax = useAx ? accessibility(pid) : { status: 'off' };
+  return r;
+}
+
+function run(argv) {
+  var useAx = argv && argv[0] === '1';
+  var out = $.NSFileHandle.fileHandleWithStandardOutput;
+  for (;;) {
+    var r;
+    try { r = probe(useAx); } catch (e) { r = { running: false, error: String(e.message || e) }; }
+    out.writeData($(JSON.stringify(r) + '\n').dataUsingEncoding($.NSUTF8StringEncoding));
+    delay(1.5);
+  }
+}

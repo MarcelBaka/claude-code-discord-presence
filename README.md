@@ -3,7 +3,7 @@
 [![tests](https://github.com/MarcelBaka/claude-code-discord-presence/actions/workflows/test.yml/badge.svg)](https://github.com/MarcelBaka/claude-code-discord-presence/actions/workflows/test.yml)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Node.js ≥ 18](https://img.shields.io/badge/node-%E2%89%A5%2018-339933.svg)
-![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D6.svg)
+![Platform: Windows | macOS](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078D6.svg)
 ![Dependencies: 0](https://img.shields.io/badge/dependencies-0-brightgreen.svg)
 
 Show what you are building with **Claude Code** on your Discord profile – the project, whether
@@ -23,7 +23,7 @@ Discord client's local RPC and your own public Application ID.
 ## Features
 
 - **Zero setup after install** – global Claude Code hooks start one small background process; no
-  server to run, no Windows autostart.
+  server to run, no autostart needed (Windows and macOS).
 - **Real token usage** – read from the session transcript Claude Code writes, deduplicated per API
   response, subagents included. Never estimated from text length.
 - **Working / waiting** – a small status badge and text show whether Claude is busy or waiting
@@ -49,11 +49,24 @@ Discord client's local RPC and your own public Application ID.
 
 ## Requirements
 
-- Windows 10/11 with the **Discord desktop app** (the browser version has no local RPC)
+- **Windows 10/11**, or **macOS** on Apple Silicon or Intel
+- The **Discord desktop app** (the browser version has no local RPC)
 - **Claude Code** (CLI or the Claude desktop app's Code tab)
-- **Node.js 18+** on `PATH`
+- **Node.js 18+** (macOS: Node 20+ recommended – from nodejs.org, Homebrew, nvm, fnm, volta…).
+  The installer writes the absolute path of the Node it was run with into the hooks, so Claude
+  does not need `node` on its `PATH` – the Claude desktop app and launchd start with a minimal one.
 
-Linux and macOS code paths exist but are untested. WSL is not supported yet.
+### Platform support
+
+| Platform | Status |
+|---|---|
+| Windows 10/11 x64 | Supported; real Discord and Claude verified by the author; CI: Node 18/20/22 |
+| macOS, Intel (x64) | Supported; full test suite passed on macOS 13.7 Intel (Node 22); Discord socket discovery and the IPC handshake checked against a real Discord client; CI job `macos-15-intel` (Node 22) |
+| macOS, Apple Silicon (arm64) | Supported by the same code (no architecture-specific parts); covered by the CI job `macos-latest` (Node 20/22/24) – see the Actions badge for its current result |
+| Linux | Code paths exist (sockets, `ps`, XDG/Flatpak/Snap Discord sockets) but are not tested |
+| WSL | Not supported |
+
+See [`docs/reports`](docs/reports) for exactly what was verified with a real Discord client.
 
 ## Quick start
 
@@ -67,11 +80,25 @@ Linux and macOS code paths exist but are untested. WSL is not supported yet.
 
 ### 2. Install
 
+**Windows** (PowerShell):
+
 ```powershell
 git clone https://github.com/MarcelBaka/claude-code-discord-presence.git
 cd claude-code-discord-presence
 node install.js --app-id <YOUR_APPLICATION_ID>
 ```
+
+**macOS** (Terminal):
+
+```bash
+git clone https://github.com/MarcelBaka/claude-code-discord-presence.git
+cd claude-code-discord-presence
+node install.js --app-id <YOUR_APPLICATION_ID>
+```
+
+No `git`? Download the ZIP from GitHub (Code → Download ZIP), unpack it and run
+`node install.js --app-id …` inside the folder. No `sudo` is needed; everything goes to
+`~/.claude/discord-presence` and `~/.claude/settings.json`.
 
 ### 3. Restart Claude Code
 
@@ -84,10 +111,20 @@ Check what is being sent at any time:
 node "$env:USERPROFILE\.claude\discord-presence\cli.js" status
 ```
 
+```bash
+node ~/.claude/discord-presence/cli.js status
+```
+
 ## Commands
+
+Windows (PowerShell) / macOS (Terminal):
 
 ```powershell
 node "$env:USERPROFILE\.claude\discord-presence\cli.js" <command>
+```
+
+```bash
+node ~/.claude/discord-presence/cli.js <command>
 ```
 
 | Command | What it does |
@@ -103,7 +140,8 @@ node "$env:USERPROFILE\.claude\discord-presence\cli.js" <command>
 | `today <rotate\|tooltip\|off>` | Today's totals: alternate with the session line every 20 s, show in the tooltip, or hide |
 | `link <folder> [url]` | Add a button for a project; without a URL the Git `origin` remote is used |
 | `unlink <folder>` | Remove the button |
-| `autostart on\|off` | Start at Windows sign-in (chat tab shows up without a Code session) |
+| `autostart on\|off` | Start at sign-in – Windows Startup folder or a macOS LaunchAgent (optional) |
+| `mac-accessibility on\|off` | macOS: opt-in Accessibility detection of minimized/closed windows and the Code/chat tab |
 | `update` | Download the latest version from GitHub and reinstall (keeps your config) |
 | `chat on\|off` | Show or hide the activity in the regular Claude chat tab |
 | `type <watching\|playing\|competing\|listening>` | Discord activity type (see [VS Code](#using-it-with-the-vs-code-discord-extension)) |
@@ -117,7 +155,8 @@ node "$env:USERPROFILE\.claude\discord-presence\cli.js" <command>
 
 ## Configuration
 
-Settings live in `%USERPROFILE%\.claude\discord-presence\config.json` and are picked up live.
+Settings live in `%USERPROFILE%\.claude\discord-presence\config.json` (macOS:
+`~/.claude/discord-presence/config.json`) and are picked up live.
 The commands above edit it for you; [`config.example.json`](config.example.json) shows every key.
 
 | Key | Default | Meaning |
@@ -142,6 +181,7 @@ The commands above edit it for you; [`config.example.json`](config.example.json)
 | `activityType` | `"watching"` | `watching`, `playing`, `competing`, `listening` |
 | `showChat` | `true` | Activity in the Claude desktop app's chat tab |
 | `hideWhenWindowClosed` | `true` | Hide when the Claude desktop window is closed |
+| `macAccessibility` | `false` | macOS: use Accessibility (System Events) for minimized/closed windows and the tab |
 | `largeImageKey` / `largeImageText` | `""` / `"Claude Code"` | Image (empty = app icon) and its tooltip |
 | `showSessionCount` | `false` | Append the number of open sessions |
 | `logMaxBytes` | `524288` | Log size before rotation |
@@ -170,11 +210,20 @@ profile.
 
 ## Autostart (optional)
 
-By default the background process is started by Claude Code hooks. `autostart on` also starts it
-at Windows sign-in, so opening the Claude desktop app straight into a chat shows
-`Chatting with Claude` right away. It adds `Claude Code Discord Presence.vbs` to your Startup folder
-(`shell:startup`), which launches Node with no window; the process then stays running (a few MB of
-memory plus a small PowerShell window watcher). `autostart off` or uninstalling removes it.
+By default the background process is started by Claude Code hooks – nothing runs at sign-in.
+`autostart on` also starts it at sign-in and keeps it running in standby (a few MB of memory).
+`autostart off` or uninstalling removes it; re-running the installer updates its paths.
+
+- **Windows:** adds `Claude Code Discord Presence.vbs` to your Startup folder (`shell:startup`),
+  which launches Node with no window. Opening the Claude desktop app straight into a chat then
+  shows `Chatting with Claude` right away.
+- **macOS:** writes a user LaunchAgent,
+  `~/Library/LaunchAgents/io.github.marcelbaka.claude-code-discord-presence.plist` (no `sudo`),
+  and loads it with `launchctl bootstrap gui/$UID`. It has absolute paths, its own minimal
+  environment (no shell profile), `RunAtLoad` and **no** `KeepAlive`, so a process you stopped
+  is not restarted, and an instance started while one already runs simply exits. `autostart off`
+  unloads (`launchctl bootout`) and deletes only this file. On macOS the chat card additionally
+  needs `mac-accessibility on` (see below).
 
 ## Updating
 
@@ -182,25 +231,51 @@ memory plus a small PowerShell window watcher). `autostart off` or uninstalling 
 node "$env:USERPROFILE\.claude\discord-presence\cli.js" update
 ```
 
-downloads the `main` branch of this repository as a ZIP, runs its installer and keeps your
-configuration. From a clone, `git pull` followed by `node install.js` does the same.
+```bash
+node ~/.claude/discord-presence/cli.js update
+```
+
+downloads the `main` branch of this repository as a ZIP, unpacks it with a system tool
+(`Expand-Archive` on Windows, `ditto` on macOS, `unzip` on Linux – arguments are passed directly,
+never through a shell string), runs its installer and keeps your configuration and Application ID.
+A failed download, unpack or install is reported as a failure (exit code 1) and the temporary files
+are removed either way. From a clone, `git pull` followed by `node install.js` does the same.
 
 ## How it works
 
 ```
 claude ──hooks──▶ hook.js ──event file──▶ daemon.js ──local IPC──▶ Discord desktop
  (SessionStart, UserPromptSubmit, Stop,    │  ▲
-  Notification, CwdChanged, SessionEnd)    │  └─ window-watch.ps1 (desktop app window & tab)
+  Notification, CwdChanged, SessionEnd)    │  └─ window-watch.ps1 / window-watch-mac.jxa (desktop app)
                                            └──── session transcript (.jsonl) → tokens & cost
 ```
 
 - **`hook.js`** runs on six Claude Code events. It prints nothing (so nothing reaches Claude's
   context), records the session id, transcript path and project folder, starts the background
   process if needed and exits in ~0.2 s.
-- **`daemon.js`** is a single background process (a named pipe guarantees only one instance). It
-  keeps a registry of sessions, checks that each Claude process is still alive, reads transcripts
-  incrementally and sends `SET_ACTIVITY` to Discord – only when something changed, at most 5 times
-  per 20 s, with reconnects backing off from 2 s to 60 s.
+- **Hook command.** Claude Code runs hooks through a shell (`sh -c` on macOS/Linux, Git Bash or
+  PowerShell on Windows). On macOS every path is written in POSIX single quotes (a `'` becomes
+  `'\''`), so install paths with spaces, apostrophes, `$`, backticks, `!`, quotes or non-ASCII
+  characters reach Node unchanged.
+- **`daemon.js`** is a single background process. It keeps a registry of sessions, checks that each
+  Claude process is still alive, reads transcripts incrementally and sends `SET_ACTIVITY` to
+  Discord – only when something changed, at most 5 times per 20 s, with reconnects backing off from
+  2 s to 60 s; the timer never resets on reconnect.
+- **One instance.** Windows: a per-user named pipe. macOS/Linux: a Unix socket in the private
+  `state/` folder (or, if that path is longer than the 104-byte socket limit, in a per-user `0700`
+  folder `/tmp/cdp-<uid>/`). Starting, probing and removing a socket left behind by a crash all
+  happen under one short lock, and only a socket owned by you is removed – simultaneous hook
+  starts never delete a running (or just-starting) instance's socket. All state files are created owner-only.
+- **Which process is Claude?** First Claude Code's own registry (`~/.claude/sessions/<pid>.json`).
+  If it has no entry, the hook records its ancestors with `ps` (the shell that ran it exits right
+  away) and the daemon picks the Claude process – the native `claude` binary (also the copy bundled
+  with the Claude desktop app) or Node running `@anthropic-ai/claude-code` – never the hook's shell.
+  On macOS the process start time is compared with the one Claude recorded and re-checked every
+  15 s, so a PID reused by another program never keeps a closed session on your profile.
+- **Discord socket (macOS/Linux).** `discord-ipc-0` … `discord-ipc-9` in every candidate
+  directory: `$XDG_RUNTIME_DIR`, `$TMPDIR`, `$TMP`, `$TEMP`, the per-user temporary folder macOS
+  assigns (`getconf DARWIN_USER_TEMP_DIR`, used when the process was started without `TMPDIR`) and
+  `/tmp` (plus Flatpak/Snap folders on Linux), deduplicated.
 - **Project name** = the Git repository's root folder (Git worktrees resolve to the main repo),
   otherwise the working directory's name. Only the name is ever published.
 
@@ -239,12 +314,36 @@ profile, VS Code is listed first and stays the status under your name. Prefer Cl
 
 ## Claude desktop app
 
+**Windows**
+
 - **Window closed** (the app keeps running in the tray): the activity is hidden within ~2 s and
   comes back with the same timer when you reopen the window. A minimized window still counts.
 - **Regular chat tab**: the card switches to `Chatting with Claude` with its own timer. Chats have
   no local transcript, so there are no tokens or cost for them.
 - Both are detected by a small PowerShell watcher using the Windows window list and UI Automation.
   Only the tab type (Code/chat) is used – conversation titles never leave the watcher.
+
+**macOS** – a small JavaScript-for-Automation watcher (`osascript`) runs while a desktop-app
+session is open. What can be detected:
+
+| | Without permissions (default) | With `mac-accessibility on` |
+|---|---|---|
+| Claude app running | ✔ | ✔ |
+| App hidden (⌘H) – counts as open | ✔ | ✔ |
+| Window on screen | ✔ | ✔ |
+| Minimized vs. closed (⌘W, app stays in the Dock) vs. on another Space | ✘ – shown as `unknown`, the card stays | ✔ – only a closed window hides the card |
+| Code vs. chat tab | ✘ – the chat card is not shown | experimental, from the window title (not yet verified with a real app) |
+
+The CLI presence never depends on this: a refused permission, a missing watcher or an unknown
+state never hides a session, and the watcher asks at most once (no loops). The tab is never guessed
+from the app merely running. Window titles are read only inside the watcher; only the tab type
+leaves it. Conversation content is never read.
+
+To enable the extra detection: `node ~/.claude/discord-presence/cli.js mac-accessibility on`, then
+in **System Settings → Privacy & Security** allow **Accessibility** and **Automation → System
+Events** for the app that started Claude Code (Terminal, iTerm, the Claude app – or `osascript`/
+`node` when started by the LaunchAgent). `cli.js status` shows the current state and whether
+Accessibility was granted (`ok`), refused (`denied`) or is `off`.
 
 ## Privacy
 
@@ -254,7 +353,8 @@ project buttons you add yourself. **Never** prompts, responses, file contents, p
 does not read prompt text, and nothing in this project ever calls a model.
 
 The app icon is looked up once from Discord's public application endpoint using only your public
-Application ID. Local diagnostics (`state\`, size-limited `logs\`) stay on your machine.
+Application ID. Local diagnostics (`state\`, size-limited `logs\`) stay on your machine; on
+macOS they, and the daemon socket, are readable by your user only.
 
 ## Troubleshooting
 
@@ -266,6 +366,9 @@ Application ID. Local diagnostics (`state\`, size-limited `logs\`) stay on your 
 | Only VS Code is visible | Use the default type: `cli.js type watching`. |
 | Old app name or icon | Restart Discord (`Ctrl+R`); after changing the icon run `cli.js stop`. |
 | Hooks not firing | Restart Claude Code; re-run `node install.js` (safe to repeat). |
+| macOS: hooks fail after a Node upgrade / switching nvm versions | Re-run `node install.js` with the Node you want to use (Homebrew installs use the stable `/opt/homebrew/bin/node`-style link automatically). |
+| macOS: `Discord is not running` although it is | `ls "$(getconf DARWIN_USER_TEMP_DIR)"discord-ipc-*` should list a socket; restart Discord if not. |
+| macOS: card stays when the desktop window is closed | Expected without Accessibility (see [Claude desktop app](#claude-desktop-app)); `cli.js mac-accessibility on`. |
 
 ## Uninstall
 
@@ -273,21 +376,31 @@ Application ID. Local diagnostics (`state\`, size-limited `logs\`) stay on your 
 node "$env:USERPROFILE\.claude\discord-presence\uninstall.js"
 ```
 
-Clears the activity, stops the background process, removes **only** this project's hooks from
-`settings.json` (after a backup) and deletes the install folder. Add `--keep-files` to keep the
-configuration.
+```bash
+node ~/.claude/discord-presence/uninstall.js
+```
+
+Clears the activity, stops the background process, removes the autostart entry (Startup-folder
+file or our LaunchAgent only), removes **only** this project's hooks from `settings.json` (after a
+backup; other hooks and your `statusLine` stay) and deletes the install folder. Add `--keep-files`
+to keep the configuration.
 
 ## Development
 
-```powershell
+```bash
 node --test test/unit.test.js test/integration.test.js
 ```
 
-Unit tests cover token counting, pricing, project names and `settings.json` merging. End-to-end
-tests run the real `hook.js` and `daemon.js` against a fake Discord IPC server and fake Claude
-processes: concurrent starts, Discord restarts, multiple projects, crashes, `/clear`, closing the
-window, the chat tab, working/waiting (including Esc), today's totals, buttons and autostart.
-GitHub Actions runs them on Windows with Node 18, 20 and 22. See [`docs/reports`](docs/reports) for the verification report.
+Unit tests cover token counting, pricing, project names, `settings.json` merging, hook-command
+quoting, socket discovery, `ps` parsing, the single-instance lock, the macOS window states, the
+LaunchAgent and the updater. End-to-end tests run the real `hook.js` and `daemon.js` against a fake
+Discord IPC server and fake Claude processes – named pipes on Windows, real Unix sockets on macOS:
+concurrent starts, a daemon killed with `SIGKILL`, Discord restarts, multiple projects, crashes,
+PID lookup through the real process tree, PID reuse, `/clear`, closing the window, the chat tab,
+working/waiting (including Esc), today's totals, buttons, autostart, install → reinstall →
+uninstall. Platform-specific cases are skipped explicitly with a reason.
+GitHub Actions runs them on Windows (Node 18/20/22), macOS Apple Silicon (Node 20/22/24) and macOS
+Intel (Node 22). See [`docs/reports`](docs/reports) for the verification reports.
 
 ### Known limitations
 
@@ -295,6 +408,9 @@ GitHub Actions runs them on Windows with Node 18, 20 and 22. See [`docs/reports`
 - Without `autostart on`, opening the desktop app straight into a chat shows nothing until the
   first Claude Code event.
 - Chat-tab detection relies on the Claude app's page title; an app update could change it.
+- macOS: without Accessibility, a minimized window, a window on another Space and a closed window
+  look the same (the card stays); the chat card needs `mac-accessibility on`, whose title-based
+  tab detection is not yet verified on a real Mac.
 
 ## License
 

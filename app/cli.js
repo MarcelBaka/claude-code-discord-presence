@@ -53,7 +53,8 @@ const help = `Discord Rich Presence for Claude Code
   node cli.js today <rotate|tooltip|off>   today's totals across all sessions
   node cli.js link <folder> [url]  add a button (e.g. View on GitHub) for a project; no url = read the Git remote
   node cli.js unlink <folder>
-  node cli.js autostart <on|off>   start at Windows sign-in (shows the chat tab without a Code session)
+  node cli.js autostart <on|off>   start at sign-in (Windows: Startup folder, macOS: LaunchAgent)
+  node cli.js mac-accessibility <on|off>   macOS: use Accessibility to tell minimized/closed windows and the Code/chat tab
   node cli.js update               download the latest version from GitHub and reinstall
   node cli.js chat <on|off>       also show an activity while the regular Claude chat tab is open
   node cli.js cost <on|off>       show the estimated API-price cost next to the tokens
@@ -84,34 +85,10 @@ function gitRemoteUrl(dir) {
   } catch { return null; }
 }
 
-function download(url, dest, hops = 0) {
-  return new Promise((resolve, reject) => {
-    require('https').get(url, { headers: { 'User-Agent': 'claude-code-discord-presence' } }, res => {
-      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location && hops < 5) { res.resume(); return resolve(download(new URL(res.headers.location, url).href, dest, hops + 1)); }
-      if (res.statusCode !== 200) { res.resume(); return reject(new Error(`HTTP ${res.statusCode} for ${url}`)); }
-      const out = fs.createWriteStream(dest);
-      res.pipe(out); out.on('finish', () => out.close(resolve)); out.on('error', reject);
-    }).on('error', reject);
-  });
-}
-
 async function update() {
-  const os = require('os');
-  const { spawnSync } = require('child_process');
-  const repo = C.loadConfig().updateRepo;
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '')) fail('updateRepo in config.json must look like "owner/name".');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cdp-update-'));
-  const zip = path.join(tmp, 'source.zip');
-  console.log(`Downloading https://github.com/${repo} (main)…`);
-  await download(`https://codeload.github.com/${repo}/zip/refs/heads/main`, zip);
-  const outDir = path.join(tmp, 'x');
-  const ex = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Expand-Archive -LiteralPath '${zip.replace(/'/g, "''")}' -DestinationPath '${outDir.replace(/'/g, "''")}' -Force`], { encoding: 'utf8' });
-  if (ex.status !== 0) fail(`Could not unpack the download: ${ex.stderr}`);
-  const top = fs.readdirSync(outDir).map(n => path.join(outDir, n)).find(d => fs.existsSync(path.join(d, 'install.js')));
-  if (!top) fail('The download does not contain install.js.');
-  const r = spawnSync(process.execPath, [path.join(top, 'install.js')], { stdio: 'inherit', env: { ...process.env, CDP_INSTALL_DIR: C.P.app } });
-  try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
-  if (r.status !== 0) fail('Update failed – the previous version is still installed.');
+  try {
+    await require('./lib/updater').update({ repo: C.loadConfig().updateRepo, appDir: C.P.app, nodePath: require('./lib/nodepath').stableNodePath() });
+  } catch (e) { fail(`Update failed: ${e.message}`); }
   console.log('Updated. Restart open Claude Code sessions if the hooks changed.');
 }
 
@@ -124,10 +101,12 @@ async function update() {
       if (args.includes('--json')) { console.log(JSON.stringify({ daemonRunning: alive, config: cfg, status: st }, null, 2)); break; }
       console.log(`Integration: ${cfg.enabled ? 'enabled' : 'DISABLED'}`);
       console.log(`Application ID: ${cfg.applicationId ? cfg.applicationId : 'MISSING – run: node cli.js set-app-id <ID>'}`);
-      console.log(`Autostart at sign-in: ${autostart.isEnabled() ? 'on' : 'off'}`);
+      console.log(`Autostart at sign-in: ${autostart.isEnabled() ? `on (${autostart.filePath()})` : 'off'}`);
+      if (process.platform === 'darwin') console.log(`Claude desktop detection (macOS): app running/hidden/window on screen – always; minimized vs closed and Code/chat tab – ${cfg.macAccessibility ? 'via Accessibility (requested)' : 'unavailable (mac-accessibility off)'}`);
       console.log(`Background process: ${alive ? `running (PID ${st && st.daemonPid})` : 'not running (starts on the next Claude event)'}`);
       if (!alive || !st || !st.daemonPid) break;
-      if (st.claudeApp) console.log(`Claude app: window ${st.claudeApp.windowVisible ? 'visible' : 'hidden/closed'}, tab: ${st.claudeApp.tab}${st.claudeApp.showingChat ? ' → showing the chat activity' : ''}`);
+      if (st.claudeApp && st.claudeApp.mac) console.log(`Claude app (macOS): ${st.claudeApp.mac.state}, tab: ${st.claudeApp.mac.mode || 'unknown'}, Accessibility: ${st.claudeApp.mac.accessibility}${st.claudeApp.showingChat ? ' → showing the chat activity' : ''}`);
+      else if (st.claudeApp) console.log(`Claude app: window ${st.claudeApp.windowVisible ? 'visible' : 'hidden/closed'}, tab: ${st.claudeApp.tab}${st.claudeApp.showingChat ? ' → showing the chat activity' : ''}`);
       console.log(`Discord: ${st.discord.state}${st.discord.error ? ` (${st.discord.error})` : ''}${st.discord.state === 'waiting' ? `, retry at ${st.discord.nextRetryAt}` : ''}`);
       console.log(`\nSessions (${st.sessions.length}):`);
       for (const s of st.sessions) console.log(`  ${s.id === (st.active && st.active.sessionId) ? '*' : ' '} ${s.id.slice(0, 8)}  PID ${s.pid || '?'} (${s.pidVia || 'none'})  project: ${s.project === null ? '[hidden]' : s.project}  window: ${s.window || 'n/a'}  last activity: ${s.lastActivity || '-'}`);
@@ -227,17 +206,28 @@ async function update() {
     case 'autostart': {
       if (!['on', 'off'].includes(args[0])) fail('Usage: autostart <on|off>');
       if (args[0] === 'on') {
-        const f = autostart.enable(process.execPath, path.join(C.P.app, 'daemon.js'));
+        let f;
+        try { f = autostart.enable(require('./lib/nodepath').stableNodePath(), path.join(C.P.app, 'daemon.js')); } catch (e) { fail(`Autostart not available: ${e.message}`); }
         editConfig(c => { c.autostart = true; });
         console.log(`Autostart on: ${f}\nThe background process now also starts at sign-in and stays running (it shows the chat tab without a Code session).`);
+        const lc = autostart.enable.lastLaunchctl;
+        if (lc && !lc.ok) console.log(`Note: launchctl could not load it now (${lc.error}); it will start at the next sign-in.`);
       } else {
         autostart.disable();
         editConfig(c => { c.autostart = false; });
+        if (process.platform === 'darwin') console.log('LaunchAgent unloaded and removed (a standby process it started was stopped; the next Claude event starts it again if sessions are open).');
         console.log('Autostart off. The background process again exits ~20 s after the last Claude Code session.');
       }
       break;
     }
     case 'update': await update(); break;
+    case 'mac-accessibility':
+      if (!['on', 'off'].includes(args[0])) fail('Usage: mac-accessibility <on|off>');
+      editConfig(c => { c.macAccessibility = args[0] === 'on'; });
+      console.log(args[0] === 'on'
+        ? 'Enabled. On the first check macOS may ask to let the app that started Claude (Terminal, iTerm, Claude…) control "System Events" and use Accessibility:\n  System Settings → Privacy & Security → Accessibility / Automation. If you refuse, the CLI presence keeps working; only the extra detection stays unavailable (see status).'
+        : 'Disabled. Minimized/closed windows and the Code/chat tab are not detected on macOS.');
+      break;
     case 'chat':
       if (!['on', 'off'].includes(args[0])) fail('Usage: chat <on|off>');
       editConfig(c => { c.showChat = args[0] === 'on'; }); console.log('Done.');
