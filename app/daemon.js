@@ -12,6 +12,22 @@ const { SessionUsage, aggregate, countFor } = require('./lib/tokens');
 const { DiscordIPC } = require('./lib/discord-ipc');
 const { formatCost, PRICES_DATE } = require('./lib/pricing');
 const { DailyUsage } = require('./lib/daily');
+const versionLib = require('./lib/version');
+
+// ---------- update check (once a day, anonymous request to the public GitHub API) ----------
+let updateInfo = null, updateCheckAt = 0, updateChecking = false;
+function maybeCheckForUpdate() {
+  if (!cfg.checkUpdates || process.env.CDP_NO_UPDATE_CHECK === '1' || updateChecking || Date.now() - updateCheckAt < 3600e3) return;
+  updateChecking = true; updateCheckAt = Date.now();
+  versionLib.checkForUpdate({ repo: cfg.updateRepo, cacheFile: path.join(C.P.data, 'state', 'update-check.json') })
+    .then(r => {
+      const was = updateInfo && updateInfo.updateAvailable;
+      updateInfo = r;
+      if (r.updateAvailable && !was) log('update available', r.latest, '(installed', r.installed + ')');
+    })
+    .catch(e => log('update check failed', e.message))
+    .finally(() => { updateChecking = false; });
+}
 const proc = require('./lib/proc');
 const { listenExclusive, releaseSocket } = require('./lib/singleton');
 const WW = require('./lib/window-watch');
@@ -177,7 +193,7 @@ function saveRegistry() {
   const data = {
     sessions: [...sessions.values()].map(s => ({
       id: s.id, pid: s.pid, pidVia: s.pidVia, imageName: s.imageName || null, transcriptPath: s.transcriptPath, cwd: s.cwd,
-      projectRoot: s.projectRoot, lastActivity: s.lastActivity, firstSeen: s.firstSeen, processStart: s.processStart, procStart: s.procStart || null, claudeProcStart: s.claudeProcStart || null, hookPpid: s.hookPpid, entrypoint: s.entrypoint || null, status: s.status || null, statusSince: s.statusSince || null,
+      projectRoot: s.projectRoot, lastActivity: s.lastActivity, firstSeen: s.firstSeen, processStart: s.processStart, procStart: s.procStart || null, claudeProcStart: s.claudeProcStart || null, hookPpid: s.hookPpid, entrypoint: s.entrypoint || null, status: s.status || null, statusSince: s.statusSince || null, activity: s.activity || null, activityAt: s.activityAt || null,
     })),
     runs: [...runs.values()].map(r => ({ key: r.key, start: r.start, sids: [...r.usages.keys()] })),
   };
@@ -237,8 +253,16 @@ function handleEvent(ev) {
   // aktywność użytkownika: start sesji i wysłanie promptu (nie statusLine, nie zmiana katalogu)
   if (ev.event === 'SessionStart' || ev.event === 'UserPromptSubmit') s.lastActivity = Math.max(s.lastActivity, ev.at || Date.now());
   // Claude's state: working after a prompt, waiting for you after the reply / a notification
-  if (ev.event === 'UserPromptSubmit') { s.status = 'working'; s.statusSince = ev.at || Date.now(); }
-  else if (['Stop', 'StopFailure', 'Notification', 'SessionStart'].includes(ev.event)) { s.status = 'waiting'; s.statusSince = ev.at || Date.now(); }
+  if (ev.event === 'UserPromptSubmit') { s.status = 'working'; s.statusSince = ev.at || Date.now(); s.activity = 'thinking'; s.activityAt = s.statusSince; }
+  else if (ev.event === 'PreToolUse') {
+    // a tool call means Claude is working; ignore a late async hook from before the reply ended
+    const at = ev.at || Date.now();
+    if (!(s.status === 'waiting' && at <= (s.statusSince || 0))) {
+      if (s.status !== 'working') { s.status = 'working'; s.statusSince = at; }
+      if (ev.tool && at >= (s.activityAt || 0)) { s.activity = ev.tool; s.activityAt = at; }
+    }
+  }
+  else if (['Stop', 'StopFailure', 'Notification', 'SessionStart'].includes(ev.event)) { s.status = 'waiting'; s.statusSince = ev.at || Date.now(); s.activity = null; }
   if (!s.pid) {
     const r = resolveFromRegistry(sid);
     if (r) { s.pid = r.pid; s.pidVia = r.via; s.processStart = r.startedAt; s.entrypoint = r.entrypoint; s.claudeProcStart = r.procStart; }
@@ -487,9 +511,12 @@ function computePresence() {
   const cost = hasSource && cfg.showCost && scopeTotals.messages > scopeTotals.unpricedMessages ? formatCost(scopeTotals.costUsd, cfg.language) : null;
   const costPart = cost ? ` · ~${cost}${scopeTotals.unpricedMessages ? '+' : ''}` : '';
   const status = sessionStatus(s, su);
+  // what Claude is doing (Editing files, Running commands…) instead of a plain "Working"
+  const act = status === 'working' && cfg.showActivity !== false && s.activity && L.activity[s.activity] ? s.activity : null;
+  const workingText = act ? L.activity[act] : L.working;
   let state;
   if (fmt === null) state = L.noData;
-  else if (cfg.showStatus) state = `${status === 'working' ? L.working : L.waiting} · ${fmt} ${L.tokensWord}${costPart}`;
+  else if (cfg.showStatus) state = `${status === 'working' ? workingText : L.waiting} · ${fmt} ${L.tokensWord}${costPart}`;
   else state = `${label}: ${fmt}${costPart}`;
   if (cfg.showSessionCount && sessions.size > 1) state += ` · ${sessions.size} ${L.sessions}`;
   // today's totals: every other rotation slot replaces the state line, or only the tooltip
@@ -518,7 +545,7 @@ function computePresence() {
   if (img) { assets.large_image = img; assets.large_text = largeText.length >= 2 ? largeText : 'Claude Code'; }
   if (cfg.showStatus) {
     const icon = assetUrl(status === 'working' ? 'status-working.png' : 'status-waiting.png');
-    if (icon && img) { assets.small_image = icon; assets.small_text = status === 'working' ? L.workingLong : L.waitingLong; }
+    if (icon && img) { assets.small_image = icon; assets.small_text = status === 'working' ? (act ? `Claude: ${L.activity[act].toLowerCase()}…` : L.workingLong) : L.waitingLong; }
   }
   if (Object.keys(assets).length) activity.assets = assets;
   const link = name ? projectLink(s.projectRoot) : null; // never for hidden projects
@@ -527,7 +554,7 @@ function computePresence() {
     activity,
     debug: {
       sessionId: s.id, pid: s.pid, pidVia: s.pidVia || null, runStart: new Date(run.start).toISOString(),
-      claudeState: status, model: su && su.lastModel, effort: su && su.lastEffort, today, link,
+      claudeState: status, activity: act, model: su && su.lastModel, effort: su && su.lastEffort, today, link,
       tokenSource: {
         kind: 'transcript-jsonl',
         files: usages.flatMap(u => [...u.tails.values()].map(t => ({ file: t.file, kind: t.kind, exists: t.exists, lines: t.lines, badLines: t.badLines, bytesRead: t.offset }))),
@@ -627,6 +654,7 @@ function writeStatus(p) {
     config: { enabled: cfg.enabled, applicationIdSet: !!cfg.applicationId, tokenCount: cfg.tokenCount, tokenScope: cfg.tokenScope, hideProject: cfg.hideProject },
     discord: { state: discordState, error: discordError, nextRetryAt: nextRetryAt ? new Date(nextRetryAt).toISOString() : null, lastSentAt: lastSentAt ? new Date(lastSentAt).toISOString() : null },
     activityPayload: p ? p.activity : null,
+    version: versionLib.installedVersion(), update: updateInfo,
     claudeApp: { windowVisible: appState.visible, tab: appState.mode, showingChat: isChat(), platform: process.platform, ...(macInfo ? { mac: macInfo } : process.platform === 'darwin' ? { mac: { state: 'not watched', accessibility: cfg.macAccessibility ? 'requested' : 'off' } } : {}) },
     sentToDiscord: lastPayloadJson ? JSON.parse(lastPayloadJson) : null,
     active: p ? p.debug : null,
@@ -647,6 +675,7 @@ async function tick() {
       log('config reloaded');
     }
     if (!cfg.enabled) return shutdown('integration disabled');
+    maybeCheckForUpdate();
 
     const gotEvents = processInbox();
     if (rotationPhase() !== lastPhase) { lastPhase = rotationPhase(); forceScan = true; }

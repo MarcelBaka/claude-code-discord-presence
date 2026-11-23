@@ -29,6 +29,9 @@ Discord client's local RPC and your own public Application ID.
   response, subagents included. Never estimated from text length.
 - **Working / waiting** – a small status badge and text show whether Claude is busy or waiting
   for your next prompt (also after you press Esc).
+- **What Claude is doing** – `Thinking`, `Editing files`, `Reading code`, `Running commands`,
+  `Browsing the web`, `Running agents`… instead of a plain “Working”. Only the kind of tool is
+  shown, never file names, commands or URLs.
 - **Estimated cost** at Anthropic API list prices, per model (Opus, Sonnet, Haiku, Fable…).
 - **Model and effort** in the image tooltip, e.g. `Opus 5.5 · high effort`.
 - **Today's totals** across all your sessions and projects, e.g. `Today: 1.2M tokens · ~$25`,
@@ -161,7 +164,12 @@ node ~/.claude/discord-presence/cli.js <command>
 | `unlink <folder>` | Remove the button |
 | `autostart on\|off` | Start at sign-in – Windows Startup folder or a macOS LaunchAgent (optional) |
 | `mac-accessibility on\|off` | macOS: opt-in Accessibility detection of minimized vs. closed windows |
-| `update` | Download the latest version from GitHub and reinstall (keeps your config) |
+| `activity on\|off` | Show what Claude is doing (Editing files, Running commands…) |
+| `version` | Installed version and the latest release on GitHub |
+| `update [--force]` | Install the latest **release** from GitHub (keeps your config); does nothing if you already have it |
+| `update --main` | Install the `main` branch (unreleased changes) |
+| `update <version>` | Install a specific release, e.g. `update 1.1.0` – also to go back to an older one |
+| `update-check on\|off` | Check GitHub once a day for a newer release (shown in `status`) |
 | `chat on\|off` | Show or hide the activity in the regular Claude chat tab |
 | `type <watching\|playing\|competing\|listening>` | Discord activity type (see [VS Code](#using-it-with-the-vs-code-discord-extension)) |
 | `tokens <no_cache_read\|all\|output>` | What the token counter includes (see [Tokens](#how-tokens-are-counted)) |
@@ -190,6 +198,8 @@ The commands above edit it for you; [`config.example.json`](config.example.json)
 | `includeSubagents` | `true` | Count subagent usage |
 | `showCost` | `true` | Append the estimated cost |
 | `showStatus` | `true` | Working/waiting text and badge |
+| `showActivity` | `true` | What Claude is doing instead of a plain “Working” |
+| `checkUpdates` | `true` | Daily check for a newer release on GitHub |
 | `showModel` | `true` | Model and effort in the image tooltip |
 | `showToday` | `"rotate"` | `rotate`, `tooltip` or `off` |
 | `links` | `{}` | `{ "folder-name or full path": "https://…" }` – project buttons |
@@ -207,6 +217,13 @@ The commands above edit it for you; [`config.example.json`](config.example.json)
 
 ## Working, waiting, model and today
 
+- **What Claude is doing** comes from the `PreToolUse` hook: `Edit`/`Write` → *Editing files*,
+  `Read`/`Grep`/`Glob` → *Reading code*, `Bash`/`PowerShell` → *Running commands*,
+  `WebSearch`/`WebFetch`/browser tools → *Browsing the web*, `Task`/`Agent` → *Running agents*,
+  to-do and plan tools → *Planning*, other tools (MCP…) → *Using tools*; right after a prompt it
+  says *Thinking*. The hook keeps only that category – the tool's input (file names, commands,
+  URLs, queries) is never stored, logged or sent. It runs as an `async` hook, so Claude never
+  waits for it. `activity off` turns it off (the hook then exits immediately).
 - **Working** starts when you send a prompt; **Waiting** when Claude finishes its reply (`Stop`
   hook), asks for your input (`Notification`), or you interrupt it with Esc (detected from the
   transcript, since no hook fires then). After 15 minutes without a reply or a hook, a stuck
@@ -257,14 +274,24 @@ By default the background process is started by Claude Code hooks – nothing ru
 ## Updating
 
 ```powershell
+node "$env:USERPROFILE\.claude\discord-presence\cli.js" version
 node "$env:USERPROFILE\.claude\discord-presence\cli.js" update
 ```
 
 ```bash
+node ~/.claude/discord-presence/cli.js version
 node ~/.claude/discord-presence/cli.js update
 ```
 
-downloads the `main` branch of this repository as a ZIP, unpacks it with a system tool
+`version` shows the installed version and the latest release. The background process also checks
+once a day and `status` then says `Update available: 1.2.0 (installed 1.1.0)`. The check is one
+anonymous request to the public GitHub API (`api.github.com/repos/<repo>/releases/latest`) – no
+token and no data about you or your sessions; `update-check off` disables it.
+
+`update` installs the **latest published release** (its tag), not the `main` branch, so you only
+get tested, released versions; if you already have it, nothing happens (`--force` reinstalls).
+`update --main` takes the unreleased `main` branch, `update 1.0.1` a specific release (also to go
+back). It downloads that version as a ZIP, unpacks it with a system tool
 (the built-in `tar.exe` on Windows 10/11, `ditto` on macOS, `unzip` on Linux – arguments are passed directly,
 never through a shell string), runs its installer and keeps your configuration and Application ID.
 A failed download, unpack or install is reported as a failure (exit code 1) and the temporary files
@@ -274,12 +301,13 @@ are removed either way. From a clone, `git pull` followed by `node install.js` d
 
 ```
 claude ──hooks──▶ hook.js ──event file──▶ daemon.js ──local IPC──▶ Discord desktop
- (SessionStart, UserPromptSubmit, Stop,    │  ▲
-  Notification, CwdChanged, SessionEnd)    │  └─ window-watch.ps1 / window-watch-mac.jxa (desktop app)
+ (SessionStart, UserPromptSubmit,          │  ▲
+  PreToolUse, Stop, Notification,          │  │
+  CwdChanged, SessionEnd)                  │  └─ window-watch.ps1 / window-watch-mac.jxa (desktop app)
                                            └──── session transcript (.jsonl) → tokens & cost
 ```
 
-- **`hook.js`** runs on six Claude Code events. It prints nothing (so nothing reaches Claude's
+- **`hook.js`** runs on seven Claude Code events. It prints nothing (so nothing reaches Claude's
   context), records the session id, transcript path and project folder, starts the background
   process if needed and exits in ~0.2 s.
 - **Hook command.** Claude Code runs hooks through a shell (`sh -c` on macOS/Linux, Git Bash or
@@ -391,7 +419,8 @@ project buttons you add yourself. **Never** prompts, responses, file contents, p
 does not read prompt text, and nothing in this project ever calls a model.
 
 The app icon is looked up once from Discord's public application endpoint using only your public
-Application ID. Local diagnostics (`state\`, size-limited `logs\`) stay on your machine; on
+Application ID. The daily update check asks the public GitHub API for the latest release of this
+repository (no token, nothing about you; `update-check off`). Local diagnostics (`state\`, size-limited `logs\`) stay on your machine; on
 macOS they, and the daemon socket, are readable by your user only.
 
 ## Troubleshooting
@@ -446,6 +475,10 @@ Pushing a tag such as `v1.2.3` runs the tests on Windows and macOS and then publ
 Release with two downloads built by [`tools/build-release.js`](tools/build-release.js) (plain Node,
 no dependencies): a macOS ZIP with the executable `install-macos.command` and a Windows ZIP with
 `install-windows.cmd` (CRLF). Build them locally with `node tools/build-release.js 1.2.3`.
+
+To release: bump [`app/version.json`](app/version.json), merge, then push the matching tag
+(`v` + that version). The release workflow refuses a tag that does not match `app/version.json`,
+so `cli.js version` and the update check always agree with the published release.
 
 ### Known limitations
 

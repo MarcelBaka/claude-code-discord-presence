@@ -120,9 +120,12 @@ test('settings.json: zachowanie istniejących hooków i statusLine, idempotencja
   const once = S.addOurs(orig, 'C:\\Program Files\\nodejs\\node.exe', 'C:\\Users\\x\\.claude\\discord-presence\\hook.js', 'win32');
   const twice = S.addOurs(once, 'C:\\Program Files\\nodejs\\node.exe', 'C:\\Users\\x\\.claude\\discord-presence\\hook.js', 'win32');
   assert.deepStrictEqual(twice, once);
-  assert.strictEqual(S.countOurs(twice), 6); // SessionStart, UserPromptSubmit, Stop, Notification, CwdChanged, SessionEnd
+  assert.strictEqual(S.countOurs(twice), 7); // SessionStart, UserPromptSubmit, PreToolUse, Stop, Notification, CwdChanged, SessionEnd
   assert.deepStrictEqual(twice.statusLine, orig.statusLine);
-  assert.deepStrictEqual(twice.hooks.PreToolUse, orig.hooks.PreToolUse);
+  assert.deepStrictEqual(twice.hooks.PreToolUse[0], orig.hooks.PreToolUse[0], 'foreign PreToolUse hook kept first');
+  assert.strictEqual(twice.hooks.PreToolUse.length, 2);
+  assert.strictEqual(twice.hooks.PreToolUse[1].hooks[0].async, true, 'our PreToolUse hook never blocks tools');
+  assert.strictEqual(twice.hooks.Stop[0].hooks[0].async, undefined, 'other events stay synchronous');
   assert.deepStrictEqual(twice.hooks.SessionStart[0], orig.hooks.SessionStart[0]);
   assert.match(twice.hooks.SessionStart[1].hooks[0].command, /^"C:\/Program Files\/nodejs\/node.exe" "C:\/Users\/x\/.claude\/discord-presence\/hook.js" SessionStart$/);
   assert.deepStrictEqual(S.stripOurs(twice), orig);
@@ -240,7 +243,7 @@ test('hook command: POSIX single-quote escaping for every shell metacharacter', 
   assert.strictEqual(cmd, `'/opt/homebrew/bin/node' '/Users/o'\\''brien/.claude/discord-presence/hook.js' Stop`);
   assert.ok(S.isOurs({ command: cmd }), 'marker still recognised after quoting');
   const d = S.addOurs({ statusLine: { type: 'command', command: 'x' } }, '/n', '/h/discord-presence/hook.js', 'darwin');
-  assert.strictEqual(S.countOurs(d), 6);
+  assert.strictEqual(S.countOurs(d), 7);
   assert.deepStrictEqual(S.addOurs(d, '/n', '/h/discord-presence/hook.js', 'darwin'), d, 'idempotent');
 });
 
@@ -478,12 +481,12 @@ test('updater: real unpack + installer run; failures reported, temp files remove
   const tmpBefore = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('cdp-update-')).length;
   const fetchFrom = zip => async (url, dest) => { assert.match(url, /^https:\/\/codeload\.github\.com\/o\/r\/zip\/refs\/heads\/main$/); fs.copyFileSync(zip, dest); };
   const ok = mkZip(`require('fs').writeFileSync(${JSON.stringify(marker)}, process.env.CDP_INSTALL_DIR)`);
-  await update({ repo: 'o/r', appDir: '/inst dir', fetch: fetchFrom(ok), log: () => {} });
+  await update({ repo: 'o/r', appDir: '/inst dir', ref: 'main', fetch: fetchFrom(ok), log: () => {} });
   assert.strictEqual(fs.readFileSync(marker, 'utf8'), '/inst dir');
   const bad = mkZip('process.exit(3)');
-  await assert.rejects(update({ repo: 'o/r', appDir: '/x', fetch: fetchFrom(bad), log: () => {} }), /installer failed \(exit 3\)/);
-  await assert.rejects(update({ repo: 'o/r', appDir: '/x', fetch: async (u, d) => fs.writeFileSync(d, '<html>'), log: () => {} }), /not a ZIP/);
-  await assert.rejects(update({ repo: 'o/r', appDir: '/x', fetch: async () => { throw new Error('HTTP 404'); }, log: () => {} }), /HTTP 404/);
+  await assert.rejects(update({ repo: 'o/r', appDir: '/x', ref: 'main', fetch: fetchFrom(bad), log: () => {} }), /installer failed \(exit 3\)/);
+  await assert.rejects(update({ repo: 'o/r', appDir: '/x', ref: 'main', fetch: async (u, d) => fs.writeFileSync(d, '<html>'), log: () => {} }), /not a ZIP/);
+  await assert.rejects(update({ repo: 'o/r', appDir: '/x', ref: 'main', fetch: async () => { throw new Error('HTTP 404'); }, log: () => {} }), /HTTP 404/);
   await assert.rejects(update({ repo: 'bad repo', appDir: '/x', log: () => {} }), /owner\/name/);
   assert.strictEqual(fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('cdp-update-')).length, tmpBefore, 'temporary directories removed');
 });
@@ -532,7 +535,7 @@ function sandboxEnv(home) {
 }
 function checkInstalled(home, appId) {
   const s = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'));
-  assert.strictEqual(S.countOurs(s), 6);
+  assert.strictEqual(S.countOurs(s), 7);
   assert.strictEqual(s.theme, 'dark', 'existing settings kept');
   assert.strictEqual(JSON.parse(fs.readFileSync(path.join(home, '.claude', 'discord-presence', 'config.json'), 'utf8')).applicationId, appId);
 }
@@ -584,4 +587,71 @@ test('macOS watcher: a plain "Claude" window title is never reported as the chat
   assert.strictEqual(modeFromTitle('Some chat - Claude'), 'unknown');
   assert.strictEqual(modeFromTitle('My project - Claude Code'), 'code');
   assert.strictEqual(modeFromTitle(''), 'unknown');
+});
+
+test('activity: tool names map to categories only (never their input)', () => {
+  const { categorize, CATEGORIES } = require('../app/lib/activity');
+  const cases = { Edit: 'edit', Write: 'edit', MultiEdit: 'edit', NotebookEdit: 'edit', Read: 'read', Grep: 'read', Glob: 'read',
+    Bash: 'run', PowerShell: 'run', WebSearch: 'web', WebFetch: 'web', Task: 'agent', Agent: 'agent', TodoWrite: 'plan', ExitPlanMode: 'plan',
+    mcp__Claude_Browser__navigate: 'web', 'mcp__claude-in-chrome__computer': 'web', mcp__ccd_turn__update_plan: 'plan', mcp__github__create_issue: 'tool', SomethingNew: 'tool' };
+  for (const [t, c] of Object.entries(cases)) assert.strictEqual(categorize(t), c, t);
+  assert.strictEqual(categorize(''), null);
+  assert.strictEqual(categorize(undefined), null);
+  for (const c of Object.values(cases)) assert.ok(CATEGORIES.includes(c));
+  const { strings } = require('../app/lib/common');
+  for (const lang of ['en', 'pl']) for (const c of CATEGORIES) assert.ok(strings(lang).activity[c], `${lang}.${c}`);
+});
+
+test('version: parse/compare, installed version, release lookup and daily cache', async () => {
+  const V = require('../app/lib/version');
+  assert.ok(V.compare('1.1.0', '1.0.9') > 0);
+  assert.ok(V.compare('v1.0.1', '1.0.1') === 0);
+  assert.ok(V.compare('1.2.0-beta.1', '1.2.0') < 0);
+  assert.ok(V.compare('1.10.0', '1.9.9') > 0);
+  assert.ok(Number.isNaN(V.compare('main', '1.0.0')));
+  assert.match(V.installedVersion(path.join(__dirname, '..', 'app')), /^\d+\.\d+\.\d+/);
+  assert.strictEqual(V.installedVersion(path.join(tmp, 'nowhere')), null);
+
+  const urls = [];
+  const fetchJson = async u => { urls.push(u); return { tag_name: 'v1.4.2', html_url: 'https://github.com/o/r/releases/tag/v1.4.2', published_at: '2026-11-23T10:00:00Z' }; };
+  assert.deepStrictEqual(await V.latestRelease('o/r', fetchJson), { tag: 'v1.4.2', version: '1.4.2', url: 'https://github.com/o/r/releases/tag/v1.4.2', publishedAt: '2026-11-23T10:00:00Z' });
+  assert.strictEqual(urls[0], 'https://api.github.com/repos/o/r/releases/latest');
+  await assert.rejects(V.latestRelease('not a repo', fetchJson), /owner\/name/);
+  await assert.rejects(V.latestRelease('o/r', async () => ({ tag_name: 'nightly' })), /no version tag/);
+
+  const cacheFile = path.join(tmp, 'vcache', 'update-check.json');
+  let calls = 0;
+  const counting = async u => { calls++; return fetchJson(u); };
+  let r = await V.checkForUpdate({ repo: 'o/r', cacheFile, installed: '1.1.0', fetchJson: counting, now: 1000 });
+  assert.deepStrictEqual([r.latest, r.updateAvailable, calls], ['1.4.2', true, 1]);
+  r = await V.checkForUpdate({ repo: 'o/r', cacheFile, installed: '1.1.0', fetchJson: counting, now: 2000 });
+  assert.strictEqual(calls, 1, 'cached within a day');
+  r = await V.checkForUpdate({ repo: 'o/r', cacheFile, installed: '1.4.2', fetchJson: counting, now: 3000 });
+  assert.strictEqual(r.updateAvailable, false, 'same version is not an update');
+  r = await V.checkForUpdate({ repo: 'o/r', cacheFile, installed: '1.1.0', fetchJson: async () => { throw new Error('offline'); }, now: 1000 + 25 * 3600e3 });
+  assert.deepStrictEqual([r.latest, r.error, r.updateAvailable], ['1.4.2', 'offline', true], 'a failed check keeps the last known release');
+});
+
+test('updater: latest release by tag, already up to date, explicit version, --main, no release', async () => {
+  const { resolveTarget, update } = require('../app/lib/updater');
+  const latest = async () => ({ tag: 'v1.4.2', version: '1.4.2' });
+  const logs = [];
+  const log = m => logs.push(m);
+  let t = await resolveTarget({ repo: 'o/r', ref: 'release', installed: '1.1.0', latest, log });
+  assert.deepStrictEqual(t, { url: 'https://codeload.github.com/o/r/zip/refs/tags/v1.4.2', label: 'release v1.4.2', version: '1.4.2' });
+  assert.strictEqual(await resolveTarget({ repo: 'o/r', ref: 'release', installed: '1.4.2', latest, log }), null);
+  assert.match(logs.join('\n'), /Already up to date: installed 1\.4\.2/);
+  t = await resolveTarget({ repo: 'o/r', ref: 'release', installed: '1.4.2', force: true, latest, log });
+  assert.strictEqual(t.version, '1.4.2', '--force reinstalls');
+  t = await resolveTarget({ repo: 'o/r', ref: 'release', installed: '9.0.0', latest, log });
+  assert.strictEqual(t, null, 'never downgrades by itself');
+  assert.strictEqual((await resolveTarget({ repo: 'o/r', ref: '1.0.1', installed: '1.4.2', latest, log })).url, 'https://codeload.github.com/o/r/zip/refs/tags/v1.0.1');
+  assert.strictEqual((await resolveTarget({ repo: 'o/r', ref: 'v1.0.1', latest, log })).label, 'release v1.0.1');
+  assert.strictEqual((await resolveTarget({ repo: 'o/r', ref: 'main', latest, log })).url, 'https://codeload.github.com/o/r/zip/refs/heads/main');
+  await assert.rejects(resolveTarget({ repo: 'o/r', ref: 'banana', latest, log }), /not a version/);
+  const noRelease = async () => { throw Object.assign(new Error('no published release'), { code: 'NO_RELEASE' }); };
+  await assert.rejects(update({ repo: 'o/r', appDir: '/x', latest: noRelease, log }), /no published release yet – use "update --main"/);
+  const r = await update({ repo: 'o/r', appDir: '/x', installed: '1.4.2', latest, log, fetch: async () => { throw new Error('must not download'); } });
+  assert.deepStrictEqual(r, { status: 'current' });
+  await assert.rejects(update({ repo: 'o/r', appDir: '/x', ref: '7.7.7', latest, log, fetch: async () => { throw new Error('HTTP 404 for x'); } }), /No release v7\.7\.7/);
 });

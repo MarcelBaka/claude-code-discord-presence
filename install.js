@@ -76,7 +76,9 @@ function stopDaemon(dir) {
     S.writeSettings(sp, next);
   }
 
-  console.log('Discord Rich Presence for Claude Code installed.');
+  let ver = null;
+  try { ver = JSON.parse(fs.readFileSync(path.join(SRC, 'version.json'), 'utf8')).version; } catch {}
+  console.log(`Discord Rich Presence for Claude Code${ver ? ` ${ver}` : ''} installed.`);
   console.log(`  files:   ${DEST}`);
   console.log(`  config:  ${cfgPath}`);
   console.log(`  node:    ${NODE}`);

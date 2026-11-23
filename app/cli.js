@@ -55,7 +55,12 @@ const help = `Discord Rich Presence for Claude Code
   node cli.js unlink <folder>
   node cli.js autostart <on|off>   start at sign-in (Windows: Startup folder, macOS: LaunchAgent)
   node cli.js mac-accessibility <on|off>   macOS: use Accessibility to tell minimized windows from closed ones
-  node cli.js update               download the latest version from GitHub and reinstall
+  node cli.js version              installed version and the latest release on GitHub
+  node cli.js update [--force]     install the latest release from GitHub (keeps your config)
+  node cli.js update --main        install the main branch (unreleased changes)
+  node cli.js update <version>     install that release, e.g. update 1.1.0 (also to go back)
+  node cli.js activity <on|off>    show what Claude is doing (Editing files, Running commands…)
+  node cli.js update-check <on|off>   check GitHub once a day for a newer release
   node cli.js chat <on|off>       also show an activity while the regular Claude chat tab is open
   node cli.js cost <on|off>       show the estimated API-price cost next to the tokens
   node cli.js tokens <all|no_cache_read|output>   what the token counter includes
@@ -85,11 +90,32 @@ function gitRemoteUrl(dir) {
   } catch { return null; }
 }
 
-async function update() {
+async function update(argv) {
+  const force = argv.includes('--force');
+  const rest = argv.filter(a => a !== '--force');
+  const ref = rest.includes('--main') ? 'main' : (rest.find(a => !a.startsWith('-')) || 'release');
+  let r;
   try {
-    await require('./lib/updater').update({ repo: C.loadConfig().updateRepo, appDir: C.P.app, nodePath: require('./lib/nodepath').stableNodePath() });
+    r = await require('./lib/updater').update({ repo: C.loadConfig().updateRepo, appDir: C.P.app, ref, force, nodePath: require('./lib/nodepath').stableNodePath() });
   } catch (e) { fail(`Update failed: ${e.message}`); }
-  console.log('Updated. Restart open Claude Code sessions if the hooks changed.');
+  if (r && r.status === 'updated') {
+    try { fs.rmSync(path.join(C.P.data, 'state', 'update-check.json'), { force: true }); } catch {}
+    console.log(`Updated to ${r.label}. Restart open Claude Code sessions if the hooks changed.`);
+  }
+}
+
+async function showVersion(argv) {
+  const V = require('./lib/version');
+  const cfg = C.loadConfig();
+  const installed = V.installedVersion(C.P.app);
+  console.log(`Installed: ${installed || 'unknown (installed before versions were recorded)'}`);
+  const r = await V.checkForUpdate({ repo: cfg.updateRepo, cacheFile: path.join(C.P.data, 'state', 'update-check.json'), installed, force: true });
+  if (r.error && !r.latest) { console.log(`Latest release: could not check (${r.error})`); return; }
+  console.log(`Latest release: ${r.latest}${r.url ? `  ${r.url}` : ''}`);
+  if (r.updateAvailable) console.log('A newer version is available – run: node cli.js update');
+  else if (installed && r.latest && V.compare(installed, r.latest) > 0) console.log('This build is newer than the latest release (unreleased changes).');
+  else console.log('You have the latest release.');
+  if (argv.includes('--json')) console.log(JSON.stringify(r, null, 2));
 }
 
 (async () => {
@@ -99,7 +125,8 @@ async function update() {
       const st = C.readJson(C.P.status, null);
       const cfg = C.loadConfig();
       if (args.includes('--json')) { console.log(JSON.stringify({ daemonRunning: alive, config: cfg, status: st }, null, 2)); break; }
-      console.log(`Integration: ${cfg.enabled ? 'enabled' : 'DISABLED'}`);
+      console.log(`Integration: ${cfg.enabled ? 'enabled' : 'DISABLED'}   version: ${require('./lib/version').installedVersion(C.P.app) || 'unknown'}`);
+      if (st && st.update && st.update.updateAvailable) console.log(`Update available: ${st.update.latest} (installed ${st.update.installed}) – run: node cli.js update`);
       console.log(`Application ID: ${cfg.applicationId ? cfg.applicationId : 'MISSING – run: node cli.js set-app-id <ID>'}`);
       console.log(`Autostart at sign-in: ${autostart.isEnabled() ? `on (${autostart.filePath()})` : 'off'}`);
       if (process.platform === 'darwin') console.log(`Claude desktop detection (macOS): app running/hidden/window on screen – always; minimized vs closed – ${cfg.macAccessibility ? 'via Accessibility (requested)' : 'unavailable (mac-accessibility off)'}; Code/chat tab – not detectable on macOS`);
@@ -220,7 +247,16 @@ async function update() {
       }
       break;
     }
-    case 'update': await update(); break;
+    case 'update': await update(args); break;
+    case 'version': case '--version': case '-v': await showVersion(args); break;
+    case 'activity':
+      if (!['on', 'off'].includes(args[0])) fail('Usage: activity <on|off>');
+      editConfig(c => { c.showActivity = args[0] === 'on'; }); console.log('Done.');
+      break;
+    case 'update-check':
+      if (!['on', 'off'].includes(args[0])) fail('Usage: update-check <on|off>');
+      editConfig(c => { c.checkUpdates = args[0] === 'on'; }); console.log('Done.');
+      break;
     case 'mac-accessibility':
       if (!['on', 'off'].includes(args[0])) fail('Usage: mac-accessibility <on|off>');
       editConfig(c => { c.macAccessibility = args[0] === 'on'; });
