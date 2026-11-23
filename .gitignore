@@ -4,3 +4,4 @@ state/
 logs/
 node_modules/
 *.tmp
+dist/

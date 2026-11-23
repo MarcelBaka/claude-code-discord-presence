@@ -487,3 +487,89 @@ test('updater: real unpack + installer run; failures reported, temp files remove
   await assert.rejects(update({ repo: 'bad repo', appDir: '/x', log: () => {} }), /owner\/name/);
   assert.strictEqual(fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('cdp-update-')).length, tmpBefore, 'temporary directories removed');
 });
+
+// ---------------------------------------------------------------------------
+// Release downloads (tools/build-release.js) and the double-click installers
+// ---------------------------------------------------------------------------
+function unpackZip(zipFile, dest) {
+  fs.mkdirSync(dest, { recursive: true });
+  if (process.platform === 'darwin') execFileSync('/usr/bin/ditto', ['-x', '-k', zipFile, dest]);
+  else if (process.platform === 'win32') execFileSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe'), ['-xf', zipFile, '-C', dest]);
+  else execFileSync('unzip', ['-q', zipFile, '-d', dest]);
+}
+const relDir = path.join(tmp, 'release');
+let relBuilt = null;
+const relBuild = () => relBuilt || (relBuilt = require('../tools/build-release').build('v9.8.7', path.join(relDir, 'dist')));
+
+test('release: macOS and Windows ZIPs with one top folder, installer, app files; valid CRC', () => {
+  const { crc32 } = require('../tools/build-release');
+  assert.strictEqual(crc32(Buffer.from('123456789')), 0xcbf43926, 'standard CRC-32 check value');
+  const r = relBuild();
+  assert.deepStrictEqual(Object.keys(r).sort(), ['macos', 'windows']);
+  assert.match(path.basename(r.macos), /^claude-code-discord-presence-9\.8\.7-macos\.zip$/);
+  for (const [k, f] of Object.entries(r)) {
+    const dest = path.join(relDir, k);
+    unpackZip(f, dest);
+    assert.deepStrictEqual(fs.readdirSync(dest), ['claude-code-discord-presence-9.8.7']);
+    const top = path.join(dest, 'claude-code-discord-presence-9.8.7');
+    for (const p of ['install.js', 'README.md', 'LICENSE', 'config.example.json', 'app/daemon.js', 'app/hook.js', 'app/lib/window-watch-mac.jxa', 'assets/status-working.png']) assert.ok(fs.existsSync(path.join(top, p)), `${k}: ${p}`);
+    assert.strictEqual(fs.readFileSync(path.join(top, 'app', 'daemon.js'), 'utf8'), fs.readFileSync(path.join(__dirname, '..', 'app', 'daemon.js'), 'utf8'));
+    assert.ok(!fs.existsSync(path.join(top, 'test')) && !fs.existsSync(path.join(top, '.github')), 'no tests/CI files in the download');
+  }
+  const mac = path.join(relDir, 'macos', 'claude-code-discord-presence-9.8.7', 'install-macos.command');
+  const win = path.join(relDir, 'windows', 'claude-code-discord-presence-9.8.7', 'install-windows.cmd');
+  assert.ok(fs.existsSync(mac) && !fs.existsSync(path.join(relDir, 'macos', 'claude-code-discord-presence-9.8.7', 'install-windows.cmd')));
+  assert.ok(fs.existsSync(win) && !fs.existsSync(path.join(relDir, 'windows', 'claude-code-discord-presence-9.8.7', 'install-macos.command')));
+  assert.ok(!fs.readFileSync(mac, 'utf8').includes('\r'), 'macOS script with LF');
+  assert.ok(/\r\n/.test(fs.readFileSync(win, 'utf8')) && !/[^\r]\n/.test(fs.readFileSync(win, 'utf8')), 'Windows script with CRLF only');
+  if (POSIX) assert.strictEqual(fs.statSync(mac).mode & 0o111, 0o111, 'install-macos.command is executable after unzip');
+  assert.throws(() => require('../tools/build-release').build('latest'), /version/);
+});
+
+function sandboxEnv(home) {
+  return { ...process.env, HOME: home, USERPROFILE: home, CDP_INSTALL_DIR: path.join(home, '.claude', 'discord-presence'), CDP_SETTINGS: path.join(home, '.claude', 'settings.json'),
+    CDP_LAUNCH_AGENTS_DIR: path.join(home, 'LaunchAgents'), CDP_STARTUP_DIR: path.join(home, 'Startup'), CDP_LAUNCHCTL: 'none', CDP_NO_PAUSE: '1', CDP_DATA_DIR: '' };
+}
+function checkInstalled(home, appId) {
+  const s = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'));
+  assert.strictEqual(S.countOurs(s), 6);
+  assert.strictEqual(s.theme, 'dark', 'existing settings kept');
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(home, '.claude', 'discord-presence', 'config.json'), 'utf8')).applicationId, appId);
+}
+
+test('installer (macOS .command): invalid ID re-asked, install, autostart, re-run keeps the saved ID', { skip: ONLY_POSIX }, () => {
+  relBuild();
+  const dir = path.join(relDir, 'macos', 'claude-code-discord-presence-9.8.7');
+  if (!fs.existsSync(dir)) unpackZip(relBuilt.macos, path.join(relDir, 'macos'));
+  const home = path.join(tmp, `inst home o'k ż`); fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.claude', 'settings.json'), '{"theme":"dark"}');
+  const env = { ...sandboxEnv(home), PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin` };
+  let r = spawnSync('/bin/bash', [path.join(dir, 'install-macos.command')], { env, input: 'abc\n123456789012345678\ny\n', encoding: 'utf8' });
+  assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /does not look like an Application ID/);
+  checkInstalled(home, '123456789012345678');
+  assert.ok(fs.existsSync(path.join(home, 'LaunchAgents', 'io.github.marcelbaka.claude-code-discord-presence.plist')), 'autostart answered y');
+  r = spawnSync('/bin/bash', [path.join(dir, 'install-macos.command')], { env, input: '\nn\n', encoding: 'utf8' });
+  assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /keep the saved one \(123456789012345678\)/);
+  assert.match(r.stdout, /unchanged/);
+  r = spawnSync('/bin/bash', [path.join(dir, 'install-macos.command')], { env: { ...env, PATH: '/usr/bin:/bin', HOME: path.join(tmp, 'no-node-home') }, input: '', encoding: 'utf8' });
+  if (!fs.existsSync('/usr/local/bin/node') && !fs.existsSync('/opt/homebrew/bin/node')) { assert.strictEqual(r.status, 1); assert.match(r.stdout, /Node\.js was not found/); }
+});
+
+test('installer (Windows .cmd): invalid ID re-asked, install, autostart', { skip: process.platform === 'win32' ? false : 'cmd.exe – runs on the Windows CI jobs' }, () => {
+  relBuild();
+  const dir = path.join(relDir, 'windows', 'claude-code-discord-presence-9.8.7');
+  if (!fs.existsSync(dir)) unpackZip(relBuilt.windows, path.join(relDir, 'windows'));
+  const home = path.join(tmp, `inst home o'k ż`); fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.claude', 'settings.json'), '{"theme":"dark"}');
+  const input = path.join(tmp, 'win-input.txt');
+  fs.writeFileSync(input, 'abc\r\n123456789012345678\r\ny\r\n');
+  const fd = fs.openSync(input, 'r'); // a file (not a pipe) behind stdin, like "< input.txt"
+  let r;
+  try { r = spawnSync('cmd.exe', ['/d', '/c', 'install-windows.cmd'], { cwd: dir, env: sandboxEnv(home), stdio: [fd, 'pipe', 'pipe'], encoding: 'utf8' }); } finally { fs.closeSync(fd); }
+  assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /does not look like an Application ID/);
+  checkInstalled(home, '123456789012345678');
+  assert.ok(fs.existsSync(path.join(home, 'Startup', 'Claude Code Discord Presence.vbs')), 'autostart answered y');
+});
