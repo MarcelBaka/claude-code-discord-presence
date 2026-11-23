@@ -54,7 +54,7 @@ const help = `Discord Rich Presence for Claude Code
   node cli.js link <folder> [url]  add a button (e.g. View on GitHub) for a project; no url = read the Git remote
   node cli.js unlink <folder>
   node cli.js autostart <on|off>   start at sign-in (Windows: Startup folder, macOS: LaunchAgent)
-  node cli.js mac-accessibility <on|off>   macOS: use Accessibility to tell minimized/closed windows and the Code/chat tab
+  node cli.js mac-accessibility <on|off>   macOS: use Accessibility to tell minimized windows from closed ones
   node cli.js update               download the latest version from GitHub and reinstall
   node cli.js chat <on|off>       also show an activity while the regular Claude chat tab is open
   node cli.js cost <on|off>       show the estimated API-price cost next to the tokens
@@ -102,7 +102,7 @@ async function update() {
       console.log(`Integration: ${cfg.enabled ? 'enabled' : 'DISABLED'}`);
       console.log(`Application ID: ${cfg.applicationId ? cfg.applicationId : 'MISSING – run: node cli.js set-app-id <ID>'}`);
       console.log(`Autostart at sign-in: ${autostart.isEnabled() ? `on (${autostart.filePath()})` : 'off'}`);
-      if (process.platform === 'darwin') console.log(`Claude desktop detection (macOS): app running/hidden/window on screen – always; minimized vs closed and Code/chat tab – ${cfg.macAccessibility ? 'via Accessibility (requested)' : 'unavailable (mac-accessibility off)'}`);
+      if (process.platform === 'darwin') console.log(`Claude desktop detection (macOS): app running/hidden/window on screen – always; minimized vs closed – ${cfg.macAccessibility ? 'via Accessibility (requested)' : 'unavailable (mac-accessibility off)'}; Code/chat tab – not detectable on macOS`);
       console.log(`Background process: ${alive ? `running (PID ${st && st.daemonPid})` : 'not running (starts on the next Claude event)'}`);
       if (!alive || !st || !st.daemonPid) break;
       if (st.claudeApp && st.claudeApp.mac) console.log(`Claude app (macOS): ${st.claudeApp.mac.state}, tab: ${st.claudeApp.mac.mode || 'unknown'}, Accessibility: ${st.claudeApp.mac.accessibility}${st.claudeApp.showingChat ? ' → showing the chat activity' : ''}`);
@@ -113,7 +113,7 @@ async function update() {
       console.log('\nActivity payload (sent to Discord via SET_ACTIVITY):');
       console.log(JSON.stringify(st.activityPayload, null, 2));
       console.log(`Last payload confirmed by Discord: ${st.sentToDiscord ? 'yes' : 'no'}`);
-      if (st.active) {
+      if (st.active && st.active.tokenSource) {
         const ts = st.active.tokenSource;
         console.log(`\nToken source: ${ts.kind}, mode "${ts.mode}", scope "${ts.scope}", subagents: ${ts.includeSubagents ? 'yes' : 'no'}`);
         console.log(`Launch time (Discord timer start): ${st.active.runStart}`);
@@ -226,7 +226,7 @@ async function update() {
       editConfig(c => { c.macAccessibility = args[0] === 'on'; });
       console.log(args[0] === 'on'
         ? 'Enabled. On the first check macOS may ask to let the app that started Claude (Terminal, iTerm, Claude…) control "System Events" and use Accessibility:\n  System Settings → Privacy & Security → Accessibility / Automation. If you refuse, the CLI presence keeps working; only the extra detection stays unavailable (see status).'
-        : 'Disabled. Minimized/closed windows and the Code/chat tab are not detected on macOS.');
+        : 'Disabled. Minimized and closed windows are not told apart on macOS.');
       break;
     case 'chat':
       if (!['on', 'off'].includes(args[0])) fail('Usage: chat <on|off>');

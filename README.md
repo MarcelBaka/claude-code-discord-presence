@@ -159,7 +159,7 @@ node ~/.claude/discord-presence/cli.js <command>
 | `link <folder> [url]` | Add a button for a project; without a URL the Git `origin` remote is used |
 | `unlink <folder>` | Remove the button |
 | `autostart on\|off` | Start at sign-in – Windows Startup folder or a macOS LaunchAgent (optional) |
-| `mac-accessibility on\|off` | macOS: opt-in Accessibility detection of minimized/closed windows and the Code/chat tab |
+| `mac-accessibility on\|off` | macOS: opt-in Accessibility detection of minimized vs. closed windows |
 | `update` | Download the latest version from GitHub and reinstall (keeps your config) |
 | `chat on\|off` | Show or hide the activity in the regular Claude chat tab |
 | `type <watching\|playing\|competing\|listening>` | Discord activity type (see [VS Code](#using-it-with-the-vs-code-discord-extension)) |
@@ -199,7 +199,7 @@ The commands above edit it for you; [`config.example.json`](config.example.json)
 | `activityType` | `"watching"` | `watching`, `playing`, `competing`, `listening` |
 | `showChat` | `true` | Activity in the Claude desktop app's chat tab |
 | `hideWhenWindowClosed` | `true` | Hide when the Claude desktop window is closed |
-| `macAccessibility` | `false` | macOS: use Accessibility (System Events) for minimized/closed windows and the tab |
+| `macAccessibility` | `false` | macOS: use Accessibility (System Events) to tell minimized from closed windows |
 | `largeImageKey` / `largeImageText` | `""` / `"Claude Code"` | Image (empty = app icon) and its tooltip |
 | `showSessionCount` | `false` | Append the number of open sessions |
 | `logMaxBytes` | `524288` | Log size before rotation |
@@ -240,8 +240,8 @@ By default the background process is started by Claude Code hooks – nothing ru
   and loads it with `launchctl bootstrap gui/$UID`. It has absolute paths, its own minimal
   environment (no shell profile), `RunAtLoad` and **no** `KeepAlive`, so a process you stopped
   is not restarted, and an instance started while one already runs simply exits. `autostart off`
-  unloads (`launchctl bootout`) and deletes only this file. On macOS the chat card additionally
-  needs `mac-accessibility on` (see below).
+  unloads (`launchctl bootout`) and deletes only this file. The `Chatting with Claude` card is
+  Windows-only (see below).
 
   Check it with:
 
@@ -360,18 +360,27 @@ session is open. What can be detected:
 | App hidden (⌘H) – counts as open | ✔ | ✔ |
 | Window on screen | ✔ | ✔ |
 | Minimized vs. closed (⌘W, app stays in the Dock) vs. on another Space | ✘ – shown as `unknown`, the card stays | ✔ – only a closed window hides the card |
-| Code vs. chat tab | ✘ – the chat card is not shown | experimental, from the window title (not yet verified with a real app) |
+| Code vs. chat tab | ✘ – the chat card is not shown | ✘ – not detectable: the window title is always “Claude” (checked with Claude 2.1.330) and the page content is not exposed to Accessibility |
 
 The CLI presence never depends on this: a refused permission, a missing watcher or an unknown
 state never hides a session, and the watcher asks at most once (no loops). The tab is never guessed
 from the app merely running. Window titles are read only inside the watcher; only the tab type
 leaves it. Conversation content is never read.
 
-To enable the extra detection: `node ~/.claude/discord-presence/cli.js mac-accessibility on`, then
-in **System Settings → Privacy & Security** allow **Accessibility** and **Automation → System
-Events** for the app that started Claude Code (Terminal, iTerm, the Claude app – or `osascript`/
-`node` when started by the LaunchAgent). `cli.js status` shows the current state and whether
-Accessibility was granted (`ok`), refused (`denied`) or is `off`.
+To enable the extra detection:
+
+1. `node ~/.claude/discord-presence/cli.js mac-accessibility on`
+2. **System Settings → Privacy & Security → Accessibility**: add (**+**) and switch on the app that
+   starts the background process – **Claude** (Claude Code in the desktop app), **Terminal** or
+   iTerm (`claude` in a terminal) and, with autostart, the **node** binary the installer uses
+   (⌘⇧G, e.g. `~/.local/opt/node-v22…/bin/node` or `/opt/homebrew/bin/node`). If macOS asks
+   to let it control **System Events**, allow that too.
+3. Restart the background process (a refusal is remembered until then, so you are never asked in
+   a loop): `cli.js stop`, then the next Claude event – or with autostart
+   `launchctl kickstart gui/$(id -u)/io.github.marcelbaka.claude-code-discord-presence`.
+
+`cli.js status` shows whether Accessibility was granted (`ok`), refused (`denied`, error
+`-25211`) or is `off`.
 
 ## Privacy
 
@@ -444,8 +453,8 @@ no dependencies): a macOS ZIP with the executable `install-macos.command` and a 
   first Claude Code event.
 - Chat-tab detection relies on the Claude app's page title; an app update could change it.
 - macOS: without Accessibility, a minimized window, a window on another Space and a closed window
-  look the same (the card stays); the chat card needs `mac-accessibility on`, whose title-based
-  tab detection is not yet verified on a real Mac.
+  look the same (the card stays). The Code/chat tab cannot be detected on macOS at all, so the
+  `Chatting with Claude` card is Windows-only.
 
 ## License
 
