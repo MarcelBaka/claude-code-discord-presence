@@ -71,7 +71,10 @@ class FakeDiscord {
       this.server.listen(addr, resolve);
     });
   }
-  stop() { for (const s of this.sockets) s.destroy(); return new Promise(r => this.server.close(() => r())); } // Node removes the Unix socket file on close
+  stop() { // bounded: a client connecting during close must not keep the test waiting
+    for (const s of this.sockets) s.destroy();
+    return new Promise(r => { const t = setTimeout(() => { for (const s of this.sockets) s.destroy(); r(); }, 2000); this.server.close(() => { clearTimeout(t); r(); }); });
+  } // Node removes the Unix socket file on close
   last() { return this.activities[this.activities.length - 1]; }
 }
 
@@ -96,11 +99,14 @@ function hook(input) {
 
 const asst = (id, ts, u) => JSON.stringify({ type: 'assistant', timestamp: new Date(ts).toISOString(), message: { id, usage: { input_tokens: u[0], output_tokens: u[1], cache_read_input_tokens: u[2], cache_creation_input_tokens: u[3] } } }) + '\n';
 
+// bounded: a connection that never answers (or closes without a reply) counts as "not alive"
 function daemonAlive() {
   return new Promise(resolve => {
     const s = net.createConnection(env.CDP_PIPE_NAME);
-    s.on('connect', () => s.end('ping\n')); s.on('data', () => { s.destroy(); resolve(true); });
-    s.on('error', () => resolve(false));
+    const done = v => { clearTimeout(t); s.destroy(); resolve(v); };
+    const t = setTimeout(() => done(false), 1500);
+    s.on('connect', () => s.end('ping\n')); s.on('data', () => done(true));
+    s.on('error', () => done(false)); s.on('close', () => done(false));
   });
 }
 const logText = () => { try { return fs.readFileSync(path.join(env.CDP_DATA_DIR, 'logs', 'presence.log'), 'utf8'); } catch { return ''; } };
@@ -387,6 +393,8 @@ const ONLY_POSIX = IS_WIN ? 'Unix process tree / sockets (Windows has its own Po
 const setCfg = patch => { const f = path.join(env.CDP_DATA_DIR, 'config.json'); fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), ...patch })); };
 // a previous failed test must not leave its daemon (with another environment) running
 async function freshStart() {
+  // earlier tests may leave the integration disabled (e.g. the autostart test ends with enabled:false)
+  setCfg({ enabled: true, autostart: false, showChat: false, showStatus: false, showModel: false, showToday: 'off', language: 'pl' });
   for (const p of procs) { try { p.kill('SIGKILL'); } catch {} }
   if (await daemonAlive()) {
     await new Promise(r => { const s = net.createConnection(env.CDP_PIPE_NAME); s.on('connect', () => s.end('stop\n')); s.on('close', r); s.on('error', r); });

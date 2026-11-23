@@ -48,7 +48,8 @@ async function update({ repo, appDir, platform = process.platform, fetch = downl
     const u = unpackCommand(zip, outDir, platform);
     const ex = run(u.cmd, u.args, { encoding: 'utf8', windowsHide: true, timeout: 120000 });
     if (ex.error || ex.status !== 0) throw new Error(`Could not unpack the download (${u.cmd}): ${(ex.error && ex.error.message) || (ex.stderr || '').trim() || `exit ${ex.status}`}`);
-    const top = fs.readdirSync(outDir).map(n => path.join(outDir, n)).find(d => fs.existsSync(path.join(d, 'install.js')));
+    // GitHub ZIPs have one top folder (<repo>-main/); accept a flat archive too
+    const top = [outDir, ...fs.readdirSync(outDir).map(n => path.join(outDir, n))].find(d => fs.existsSync(path.join(d, 'install.js')));
     if (!top) throw new Error('The download does not contain install.js.');
     const r = run(nodePath, [path.join(top, 'install.js')], { stdio: 'inherit', env: { ...process.env, CDP_INSTALL_DIR: appDir }, windowsHide: true });
     if (r.error || r.status !== 0) throw new Error(`The installer failed (${r.error ? r.error.message : `exit ${r.status}`}) – see its output above. config.json and the Application ID were not touched.`);

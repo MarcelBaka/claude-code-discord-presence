@@ -606,7 +606,7 @@ function writeStatus(p) {
     config: { enabled: cfg.enabled, applicationIdSet: !!cfg.applicationId, tokenCount: cfg.tokenCount, tokenScope: cfg.tokenScope, hideProject: cfg.hideProject },
     discord: { state: discordState, error: discordError, nextRetryAt: nextRetryAt ? new Date(nextRetryAt).toISOString() : null, lastSentAt: lastSentAt ? new Date(lastSentAt).toISOString() : null },
     activityPayload: p ? p.activity : null,
-    claudeApp: { windowVisible: appState.visible, tab: appState.mode, showingChat: isChat(), platform: process.platform, ...(process.platform === 'darwin' ? { mac: macInfo || { state: 'not watched', accessibility: cfg.macAccessibility ? 'requested' : 'off' } } : {}) },
+    claudeApp: { windowVisible: appState.visible, tab: appState.mode, showingChat: isChat(), platform: process.platform, ...(macInfo ? { mac: macInfo } : process.platform === 'darwin' ? { mac: { state: 'not watched', accessibility: cfg.macAccessibility ? 'requested' : 'off' } } : {}) },
     sentToDiscord: lastPayloadJson ? JSON.parse(lastPayloadJson) : null,
     active: p ? p.debug : null,
     sessions: [...sessions.values()].map(s => ({ id: s.id, pid: s.pid, pidVia: s.pidVia || null, project: displayName(s.projectRoot, cfg), projectRoot: s.projectRoot, lastActivity: s.lastActivity ? new Date(s.lastActivity).toISOString() : null, run: s.runKey, window: isWindowed(s) ? (windowVis[String(s.pid)] === false ? 'closed' : windowVis[String(s.pid)] === true ? 'open' : 'unknown') : null })),

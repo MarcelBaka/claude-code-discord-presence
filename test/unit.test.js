@@ -473,7 +473,7 @@ test('updater: real unpack + installer run; failures reported, temp files remove
     fs.writeFileSync(path.join(top, 'install.js'), installJs);
     const zip = path.join(tmp, `upd-${Math.random().toString(36).slice(2)}.zip`);
     if (process.platform === 'darwin') execFileSync('/usr/bin/ditto', ['-c', '-k', '--keepParent', top, zip]);
-    else execFileSync('powershell.exe', ['-NoProfile', '-Command', '& { Compress-Archive -Path $args[0] -DestinationPath $args[1] }', top, zip]);
+    else execFileSync('powershell.exe', ['-NoProfile', '-Command', '& { Compress-Archive -Path (Join-Path $args[0] \'*\') -DestinationPath $args[1] }', src, zip]); // keeps the repo-main/ folder, like GitHub
     return zip;
   };
   const tmpBefore = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('cdp-update-')).length;

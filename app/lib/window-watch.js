@@ -16,7 +16,7 @@ function watcherCommand({ platform = process.platform, appDir, daemonPid, pidFil
     return { cmd: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(appDir, 'lib', 'window-watch.ps1'), '-DaemonPid', String(daemonPid), '-PidFile', pidFile] };
   }
   if (platform === 'darwin') {
-    return { cmd: '/usr/bin/osascript', args: ['-l', 'JavaScript', path.join(appDir, 'lib', 'window-watch-mac.jxa'), macAccessibility ? '1' : '0'] };
+    return { cmd: '/usr/bin/osascript', args: ['-l', 'JavaScript', path.posix.join(appDir, 'lib', 'window-watch-mac.jxa'), macAccessibility ? '1' : '0'] };
   }
   return null;
 }
