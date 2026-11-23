@@ -884,3 +884,65 @@ test('auto-update: waits while Claude works (Esc counts as idle), runs the updat
     await discord.stop();
   }
 });
+
+test('desktop app: the card follows the session open in the window; resuming old sessions does not take it over', { timeout: 60000 }, async () => {
+  await freshStart();
+  setCfg({ language: 'en', showStatus: true, largeImageKey: 'none', hideWhenWindowClosed: true });
+  const winFile = path.join(tmp, 'window-viewed.json');
+  const desktop = (sid, name, startedAt) => {
+    const p = fakeClaude(sid, startedAt);
+    fs.writeFileSync(path.join(env.CDP_CLAUDE_DIR, 'sessions', `${p.pid}.json`), JSON.stringify({ pid: p.pid, sessionId: sid, startedAt, entrypoint: 'claude-desktop', name }));
+    return p;
+  };
+  const mk = n => { const r = path.join(tmp, n); fs.mkdirSync(path.join(r, '.git'), { recursive: true }); return r; };
+  const repoA = mk('alpha-app'), repoB = mk('beta-app'), repoC = mk('gamma-cli');
+  const tr = n => { const f = path.join(tmp, 'projects', `${n}.jsonl`); fs.writeFileSync(f, asst(`${n}m`, Date.now(), [0, 10, 0, 0])); return f; };
+  const pA = desktop('vwA', 'Alpha – żółć chat', Date.now() - 3000);
+  const pB = desktop('vwB', 'Beta chat', Date.now() - 2000);
+  const pC = fakeClaude('vwC', Date.now() - 1000); // a terminal session (no desktop window)
+  const setWin = title => fs.writeFileSync(winFile, JSON.stringify({ vis: { [pA.pid]: true, [pB.pid]: true }, app: { visible: true, mode: 'code', ...(title ? { title } : {}) } }));
+  setWin('Alpha – żółć chat');
+  env.CDP_WINDOW_STATE_FILE = winFile;
+  const discord = new FakeDiscord(); await discord.start();
+  const shows = (name, what) => waitFor(() => { const l = discord.last(); return l && l.activity && l.activity.details === `Project: ${name}`; }, 15000, what);
+  try {
+    const trA = tr('vwA'), trB = tr('vwB'), trC = tr('vwC');
+    await hook({ hook_event_name: 'SessionStart', session_id: 'vwA', transcript_path: trA, cwd: repoA, source: 'startup' });
+    await hook({ hook_event_name: 'UserPromptSubmit', session_id: 'vwA', transcript_path: trA, cwd: repoA, prompt: 'x' });
+    await shows('alpha-app', 'A shown');
+
+    // the app resumes an old session (clicked in the sidebar or in the background)…
+    await hook({ hook_event_name: 'SessionStart', session_id: 'vwB', transcript_path: trB, cwd: repoB, source: 'resume' });
+    await sleep(2000);
+    assert.strictEqual(discord.last().activity.details, 'Project: alpha-app', 'a resume alone does not take over the card');
+
+    // …but switching to it in the window does
+    setWin('Beta chat');
+    await shows('beta-app', 'B shown after switching in the window');
+    setWin('Alpha – żółć chat');
+    await shows('alpha-app', 'back to A in the window');
+
+    // a prompt in a terminal session wins over a window left open on A
+    await hook({ hook_event_name: 'SessionStart', session_id: 'vwC', transcript_path: trC, cwd: repoC, source: 'startup' });
+    await hook({ hook_event_name: 'UserPromptSubmit', session_id: 'vwC', transcript_path: trC, cwd: repoC, prompt: 'y' });
+    await shows('gamma-cli', 'terminal prompt wins');
+    // switching sessions in the window again takes over again
+    setWin('Beta chat');
+    await shows('beta-app', 'B after switching again');
+
+    // an unknown title (e.g. a renamed or new conversation not yet known) changes nothing
+    setWin('Something else');
+    await sleep(2000);
+    assert.strictEqual(discord.last().activity.details, 'Project: beta-app');
+
+    // the session titles never reach the log or the status file
+    assert.ok(!/Alpha – żółć chat|Beta chat|Something else/.test(logText()), 'titles not logged');
+    assert.ok(!/Alpha – żółć chat|Beta chat/.test(JSON.stringify(status())), 'titles not in status.json');
+
+    for (const p of [pA, pB, pC]) p.kill('SIGKILL');
+    await waitFor(() => discord.last().activity === null, 15000, 'cleared');
+  } finally {
+    delete env.CDP_WINDOW_STATE_FILE;
+    await discord.stop();
+  }
+});

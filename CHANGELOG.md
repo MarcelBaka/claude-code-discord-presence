@@ -4,6 +4,17 @@ All notable changes to this project. Versions follow [semantic versioning](https
 each release's notes on GitHub are built from its section here plus the list of merged pull
 requests. Add your change under the version in `app/version.json` when you open a pull request.
 
+## 1.3.1 – 2026-11-23
+
+### Fixed
+- **The project on the card got stuck.** Clicking old sessions in the Claude desktop app resumes
+  them, and each resume counted as your activity – the card jumped to the last one opened (often
+  with 0 tokens) and stayed there until your next prompt elsewhere. A resume in the desktop app no
+  longer takes over the card.
+- **The card now follows the session open in the desktop app window**: switching sessions in the
+  app switches the card at once (matched by the session name Claude stores; the title stays on
+  your computer – never sent or logged). A later prompt in a terminal session still wins.
+
 ## 1.3.0 – 2026-11-23
 
 ### Added

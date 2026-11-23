@@ -378,10 +378,12 @@ function checkLiveness() {
       else if (Date.now() - (s.treeTriedAt || 0) > T.treeRetry) resolveFromTree(s);
       continue; // bez PID nie da się wykryć awarii – czekamy na SessionEnd
     }
-    if (!s.epChecked) {
-      s.epChecked = true;
+    {
       const j = C.readJson(path.join(C.P.claudeSessions, `${s.pid}.json`), null);
-      s.entrypoint = j && j.pid === s.pid ? (j.entrypoint || null) : null; changed = true;
+      const own = j && j.pid === s.pid && j.sessionId === s.id;
+      // the name Claude shows for the session (= the desktop window's title for it)
+      s.appTitle = own && typeof j.name === 'string' ? j.name : null;
+      if (!s.epChecked) { s.epChecked = true; s.entrypoint = j && j.pid === s.pid ? (j.entrypoint || null) : null; changed = true; }
     }
     if (pidAlive(s.pid) === false) { rebindOrDrop(s, 'process gone'); changed = true; }
   }
@@ -453,7 +455,12 @@ let macInfo = null;           // macOS: { state, mode, accessibility } from the 
 let chatSince = null;         // when the regular Claude chat tab became the shown tab
 function isChat() { return !!cfg.showChat && appState.visible && appState.mode === 'chat'; }
 function applyWatch(v) {
-  if (v && typeof v === 'object' && (v.vis || v.app)) { windowVis = v.vis || {}; appState = { visible: !!(v.app && v.app.visible), mode: (v.app && v.app.mode) || 'unknown' }; macInfo = v.mac || null; }
+  if (v && typeof v === 'object' && (v.vis || v.app)) {
+    windowVis = v.vis || {};
+    const t = v.app && typeof v.app.title === 'string' ? v.app.title.slice(0, 300) : null;
+    appState = { visible: !!(v.app && v.app.visible), mode: (v.app && v.app.mode) || 'unknown', title: t };
+    macInfo = v.mac || null;
+  }
   else { windowVis = v || {}; appState = { visible: false, mode: 'unknown' }; macInfo = null; }
 }
 function windowedPids() { return [...sessions.values()].filter(isWindowed).map(s => s.pid); }
@@ -497,7 +504,7 @@ function updateWindowWatch() {
         if (platform === 'darwin') v = WW.fromMac(v, windowedPids());
         const before = JSON.stringify([windowVis, appState, macInfo]);
         applyWatch(v); watcherFails = 0;
-        if (JSON.stringify([windowVis, appState, macInfo]) !== before) { log('window state', JSON.stringify(v.mac || v)); forceScan = true; setImmediate(tick); }
+        if (JSON.stringify([windowVis, appState, macInfo]) !== before) { log('window state', JSON.stringify(v.mac || (v && v.app && v.app.title ? { ...v, app: { ...v.app, title: '(open session)' } } : v))); forceScan = true; setImmediate(tick); }
       } catch {}
     }
   });
@@ -511,9 +518,25 @@ function updateWindowWatch() {
   });
 }
 
+// The session open in the Claude desktop app window (its title = the session's name in
+// Claude's registry). Only an unambiguous match counts.
+let lastViewedId = null;
+function viewedSession() {
+  if (!appState.visible || appState.mode !== 'code' || !appState.title) return null;
+  const m = [...sessions.values()].filter(s => s.entrypoint === 'claude-desktop' && s.appTitle && s.appTitle === appState.title && !isHidden(s));
+  return m.length === 1 ? m[0] : null;
+}
+
+// Shown session: the latest of a prompt / new session (lastActivity) and the moment you
+// switched to a session in the desktop window (viewedAt). Switching in the app takes over
+// at once; a later prompt in a terminal session still wins over a window left open.
 function activeSession() {
+  const v = viewedSession();
+  if (v && v.id !== lastViewedId) { v.viewedAt = Date.now(); lastViewedId = v.id; }
+  if (!v) lastViewedId = null;
+  const rank = s => Math.max(s.lastActivity || 0, s.viewedAt || 0);
   let best = null;
-  for (const s of sessions.values()) if (isHidden(s)) continue; else if (!best || s.lastActivity > best.lastActivity || (s.lastActivity === best.lastActivity && s.firstSeen > best.firstSeen)) best = s;
+  for (const s of sessions.values()) if (isHidden(s)) continue; else if (!best || rank(s) > rank(best) || (rank(s) === rank(best) && s.firstSeen > best.firstSeen)) best = s;
   return best;
 }
 
