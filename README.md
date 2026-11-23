@@ -82,6 +82,22 @@ See [`docs/reports`](docs/reports) for exactly what was verified with a real Dis
 
 ### 2. Install
 
+**Easiest – download the installer** from the
+[latest release](https://github.com/MarcelBaka/claude-code-discord-presence/releases/latest)
+(install [Node.js 18+](https://nodejs.org) first):
+
+- **macOS:** `claude-code-discord-presence-<version>-macos.zip` → unzip → double-click
+  `install-macos.command`. The first time, macOS may block a downloaded script: right-click it →
+  **Open** → **Open**.
+- **Windows:** `claude-code-discord-presence-<version>-windows.zip` → Extract All → double-click
+  `install-windows.cmd` (SmartScreen: **More info** → **Run anyway**).
+
+The installer finds Node (also Homebrew/nvm/volta installs on macOS), asks for the Application ID
+(press Enter to keep a saved one), installs and optionally turns on start at sign-in. The scripts
+are not code-signed; they only run `node install.js` from the unzipped folder.
+
+**Or from the command line:**
+
 **Windows** (PowerShell):
 
 ```powershell
@@ -413,6 +429,13 @@ working/waiting (including Esc), today's totals, buttons, autostart, install →
 uninstall. Platform-specific cases are skipped explicitly with a reason.
 GitHub Actions runs them on Windows (Node 18/20/22), macOS Apple Silicon (Node 20/22/24) and macOS
 Intel (Node 22). See [`docs/reports`](docs/reports) for the verification reports.
+
+### Releases
+
+Pushing a tag such as `v1.2.3` runs the tests on Windows and macOS and then publishes a GitHub
+Release with two downloads built by [`tools/build-release.js`](tools/build-release.js) (plain Node,
+no dependencies): a macOS ZIP with the executable `install-macos.command` and a Windows ZIP with
+`install-windows.cmd` (CRLF). Build them locally with `node tools/build-release.js 1.2.3`.
 
 ### Known limitations
 

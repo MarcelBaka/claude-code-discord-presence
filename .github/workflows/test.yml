@@ -40,6 +40,6 @@ jobs:
           test "$(node -p process.arch)" = "${{ matrix.arch }}"
       - name: Syntax check
         shell: bash
-        run: for f in install.js app/*.js app/lib/*.js; do node --check "$f"; done
+        run: for f in install.js app/*.js app/lib/*.js tools/*.js; do node --check "$f"; done
       - name: Unit and end-to-end tests
         run: node --test test/unit.test.js test/integration.test.js
