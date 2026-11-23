@@ -55,13 +55,15 @@ Discord client's local RPC and your own public Application ID.
 - **Node.js 18+** (macOS: Node 20+ recommended – from nodejs.org, Homebrew, nvm, fnm, volta…).
   The installer writes the absolute path of the Node it was run with into the hooks, so Claude
   does not need `node` on its `PATH` – the Claude desktop app and launchd start with a minimal one.
+  On older macOS versions (e.g. macOS 13) Homebrew has no prebuilt Node and compiles it from
+  source, which can take hours – use the installer from [nodejs.org](https://nodejs.org) instead.
 
 ### Platform support
 
 | Platform | Status |
 |---|---|
 | Windows 10/11 x64 | Supported; real Discord and Claude verified by the author; CI: Node 18/20/22 |
-| macOS, Intel (x64) | Supported; full test suite passed on macOS 13.7 Intel (Node 22); Discord socket discovery and the IPC handshake checked against a real Discord client; CI job `macos-15-intel` (Node 22) |
+| macOS, Intel (x64) | Supported; verified on macOS 13.7 Intel with a real Discord client – install, project/timer/tokens card, `update` and LaunchAgent autostart; full test suite locally and in CI (`macos-15-intel`, Node 22) |
 | macOS, Apple Silicon (arm64) | Supported; CI `macos-latest` (Node 20/22/24) passes with a fake Discord IPC server; not yet checked with a real Discord on an M-series Mac |
 | Linux | Code paths exist (sockets, `ps`, XDG/Flatpak/Snap Discord sockets) but are not tested |
 | WSL | Not supported |
@@ -224,6 +226,16 @@ By default the background process is started by Claude Code hooks – nothing ru
   is not restarted, and an instance started while one already runs simply exits. `autostart off`
   unloads (`launchctl bootout`) and deletes only this file. On macOS the chat card additionally
   needs `mac-accessibility on` (see below).
+
+  Check it with:
+
+  ```bash
+  launchctl print gui/$(id -u)/io.github.marcelbaka.claude-code-discord-presence
+  ```
+
+  `state = running` means the standby process was started by launchd. `state = not running` with
+  `last exit code = 0` is also fine: another instance (started by a Claude Code hook) was already
+  running, so the one from launchd exited instead of starting a second process.
 
 ## Updating
 
