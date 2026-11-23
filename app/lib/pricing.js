@@ -1,34 +1,43 @@
 'use strict';
 // Estimated cost at Anthropic first-party API list prices (USD per million tokens).
-// Source: Claude API model/pricing documentation bundled with Claude Code 2.1.330
-// (cached 2026-11-03). Claude Code subscriptions (Pro/Max) are NOT billed per token –
-// for them this is the API-equivalent value, not money actually charged.
+// The price table lives in app/pricing.json; the background process refreshes it from the
+// repository once a day (see daemon.js), so a new model gets a price without a new release.
+// Claude Code subscriptions (Pro/Max) are NOT billed per token – for them this is the
+// API-equivalent value, not money actually charged.
 //
-// Columns: input, output, cache write 5 min, cache write 1 h, cache read.
-// Cache writes are 1.25× (5 min) and 2× (1 h) of input; cache reads vary by model.
-const PRICES_DATE = '2026-11-03';
-const P = (input, output, read, w5 = input * 1.25, w1 = input * 2) => ({ input, output, w5, w1, read });
+// Columns: input, output, cache write 5 min (w5), cache write 1 h (w1), cache read.
+const fs = require('fs');
+const path = require('path');
 
-const TABLE = [
-  // most specific prefixes first
-  ['claude-fable-5-2', P(8, 40, 0.20, 10, 16)],
-  ['claude-mythos-5-2', P(8, 40, 0.20, 10, 16)],
-  ['claude-fable-5-1', P(10, 50, 0.25)],
-  ['claude-mythos-5-1', P(10, 50, 0.25)],
-  ['claude-fable-5', P(10, 50, 1.00)],
-  ['claude-mythos-5', P(10, 50, 1.00)],
-  ['claude-opus-5-5', P(4, 20, 0.20, 5, 8)],
-  ['claude-opus-5', P(5, 25, 0.50)],
-  ['claude-opus-4-8', P(5, 25, 0.50)],
-  ['claude-opus-4-7', P(5, 25, 0.50)],
-  ['claude-opus-4-6', P(5, 25, 0.50)],
-  ['claude-opus-4-5', P(5, 25, 0.50)],
-  ['claude-sonnet-5-5', P(2, 10, 0.10, 2.5, 4)],
-  ['claude-sonnet-5', P(2, 10, 0.20, 2.5, 4)],
-  ['claude-sonnet-4', P(3, 15, 0.30)],        // 4, 4.5, 4.6
-  ['claude-haiku-5-5', P(0.10, 0.50, 0.01)],  // prompts ≤100K tokens (longer prompts cost more – not modelled)
-  ['claude-haiku-4-5', P(1, 5, 0.10)],
-];
+const P = (input, output, read, w5 = input * 1.25, w1 = input * 2) => ({ input, output, w5, w1, read });
+const PRICE_KEYS = ['input', 'output', 'w5', 'w1', 'read'];
+
+// Validates a pricing.json document; returns { date, table } or throws. Only plain numbers
+// within a sane range and simple model prefixes are accepted – the file is data, never code.
+function parsePricing(doc) {
+  if (!doc || typeof doc !== 'object' || !Array.isArray(doc.models) || !doc.models.length || doc.models.length > 500) throw new Error('pricing: no model list');
+  const table = [];
+  for (const row of doc.models) {
+    if (!Array.isArray(row) || row.length !== 2 || typeof row[0] !== 'string' || !/^[a-z0-9][a-z0-9.\-]{1,80}$/.test(row[0])) throw new Error('pricing: bad model prefix');
+    const v = row[1] || {};
+    for (const k of PRICE_KEYS) if (typeof v[k] !== 'number' || !Number.isFinite(v[k]) || v[k] < 0 || v[k] > 10000) throw new Error(`pricing: bad ${k} for ${row[0]}`);
+    table.push([row[0], P(v.input, v.output, v.read, v.w5, v.w1)]);
+  }
+  const date = typeof doc.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(doc.date) ? doc.date : null;
+  return { date, table };
+}
+
+const bundled = parsePricing(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'pricing.json'), 'utf8')));
+let current = bundled;
+
+// Use a newer table (e.g. fetched from the repository). Returns true when applied.
+function setPricing(doc) {
+  const p = parsePricing(doc);
+  if (bundled.date && p.date && p.date < bundled.date) return false; // never older than the installed table
+  current = p;
+  return true;
+}
+function pricesDate() { return current.date; }
 
 function priceFor(model, overrides) {
   if (!model) return null;
@@ -38,7 +47,7 @@ function priceFor(model, overrides) {
       return P(v.input, v.output, v.read ?? v.input * 0.1, v.w5 ?? v.input * 1.25, v.w1 ?? v.input * 2);
     }
   }
-  for (const [prefix, p] of TABLE) if (id.startsWith(prefix)) return p;
+  for (const [prefix, p] of current.table) if (id.startsWith(prefix)) return p;
   return null;
 }
 
@@ -64,4 +73,7 @@ function formatCost(usd, lang = 'en') {
   return s.startsWith('<') ? `<$${s.slice(1)}` : `$${s}`;
 }
 
-module.exports = { PRICES_DATE, priceFor, costOf, formatCost };
+// kept for compatibility (the bundled table's date)
+const PRICES_DATE = bundled.date;
+
+module.exports = { PRICES_DATE, pricesDate, priceFor, costOf, formatCost, parsePricing, setPricing };

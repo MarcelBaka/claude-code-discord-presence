@@ -10,13 +10,39 @@ const C = require('./lib/common');
 const { findProjectRoot, displayName } = require('./lib/project');
 const { SessionUsage, aggregate, countFor } = require('./lib/tokens');
 const { DiscordIPC } = require('./lib/discord-ipc');
-const { formatCost, PRICES_DATE } = require('./lib/pricing');
+const pricing = require('./lib/pricing');
+const { formatCost } = pricing;
 const { DailyUsage } = require('./lib/daily');
 const versionLib = require('./lib/version');
 
 // ---------- update check (once a day, anonymous request to the public GitHub API) ----------
 let updateInfo = null, updateCheckAt = 0, updateChecking = false;
+const PRICES_CACHE = () => path.join(C.P.data, 'state', 'pricing.json');
+let pricesCheckAt = 0;
+// the price table from the repository (app/pricing.json on main), once a day; validated
+// numbers only, never older than the installed table, cached for restarts
+function loadCachedPrices() {
+  try { if (pricing.setPricing(JSON.parse(fs.readFileSync(PRICES_CACHE(), 'utf8')))) log('price table from cache', pricing.pricesDate()); } catch {}
+}
+function maybeRefreshPrices() {
+  if (!cfg.updatePrices || process.env.CDP_NO_UPDATE_CHECK === '1' || Date.now() - pricesCheckAt < 24 * 3600e3) return;
+  if (!/^[\w.-]+\/[\w.-]+$/.test(cfg.updateRepo || '')) return;
+  pricesCheckAt = Date.now();
+  versionLib.getJson(`https://raw.githubusercontent.com/${cfg.updateRepo}/main/app/pricing.json`)
+    .then(doc => {
+      const before = pricing.pricesDate();
+      if (pricing.setPricing(doc)) {
+        try { C.writeJsonAtomic(PRICES_CACHE(), doc); } catch {}
+        if (pricing.pricesDate() !== before) { log('price table updated', before, '->', pricing.pricesDate()); forceScan = true; }
+      }
+    })
+    .catch(e => log('price table refresh failed', e.message));
+}
 function maybeCheckForUpdate() {
+  maybeRefreshPrices();
+  // tests: a fixed "update available" instead of asking GitHub
+  if (process.env.CDP_FAKE_UPDATE) updateInfo = C.readJson(process.env.CDP_FAKE_UPDATE, null);
+  maybeAutoUpdate();
   if (!cfg.checkUpdates || process.env.CDP_NO_UPDATE_CHECK === '1' || updateChecking || Date.now() - updateCheckAt < 3600e3) return;
   updateChecking = true; updateCheckAt = Date.now();
   versionLib.checkForUpdate({ repo: cfg.updateRepo, cacheFile: path.join(C.P.data, 'state', 'update-check.json') })
@@ -28,6 +54,32 @@ function maybeCheckForUpdate() {
     .catch(e => log('update check failed', e.message))
     .finally(() => { updateChecking = false; });
 }
+// autoUpdate (opt-in): when the daily check finds a newer release, install it with
+// `cli.js update --auto` – only while no session is working, at most once a day per version.
+// The installer stops this process; the updater starts the new version again.
+const AUTO_FILE = () => path.join(C.P.data, 'state', 'auto-update.json');
+let autoUpdating = false;
+function maybeAutoUpdate() {
+  if (!cfg.autoUpdate || autoUpdating || !updateInfo || !updateInfo.updateAvailable) return;
+  if (process.env.CDP_NO_UPDATE_CHECK === '1' && !process.env.CDP_FAKE_UPDATE) return;
+  // never in the middle of Claude's work – judged like the card: an Esc (no Stop hook) or a
+  // stale "working" counts as waiting, so an idle session does not block updates forever
+  if ([...sessions.values()].some(s => effectiveStatus(s) === 'working')) return;
+  const last = C.readJson(AUTO_FILE(), {}) || {};
+  if (last.version === updateInfo.latest && Date.now() - (last.at || 0) < 24 * 3600e3) return;
+  autoUpdating = true;
+  try { C.writeJsonAtomic(AUTO_FILE(), { version: updateInfo.latest, at: Date.now() }); } catch {}
+  log('auto-update: installing', updateInfo.latest, '(installed', updateInfo.installed + ')');
+  const out = fs.openSync(path.join(C.P.logDir, 'auto-update.log'), 'a');
+  const child = require('child_process').spawn(process.execPath, [process.env.CDP_AUTO_UPDATE_SCRIPT || path.join(C.P.app, 'cli.js'), 'update', '--auto'], { detached: true, stdio: ['ignore', out, out], windowsHide: true, cwd: C.P.data });
+  child.on('error', e => { log('auto-update failed to start', e.message); autoUpdating = false; });
+  // a successful update stops this process (the installer); if we are still here when the
+  // updater exits, it failed – release the latch so it can retry after the daily cooldown
+  child.on('exit', code => { autoUpdating = false; if (code) log('auto-update failed (exit', code + ') – see logs/auto-update.log'); });
+  child.unref();
+  try { fs.closeSync(out); } catch {}
+}
+
 const proc = require('./lib/proc');
 const { listenExclusive, releaseSocket } = require('./lib/singleton');
 const WW = require('./lib/window-watch');
@@ -468,6 +520,8 @@ function chatPresence() {
   if (ACT_TYPES[cfg.activityType]) activity.type = ACT_TYPES[cfg.activityType];
   const img = largeImage();
   if (img) activity.assets = { large_image: img, large_text: 'Claude' };
+  const promo = promoButton(L);
+  if (promo) activity.buttons = [promo];
   return { activity, debug: { mode: 'chat', chatSince: new Date(chatSince || Date.now()).toISOString(), note: 'regular Claude chat: no local token data' } };
 }
 
@@ -483,6 +537,12 @@ function assetUrl(name) {
   const base = String(cfg.assetBaseUrl || '').replace(/\/+$/, '');
   return /^https:\/\//.test(base) ? `${base}/${name}` : null;
 }
+// the state the card would show for this session (Esc and stale "working" → waiting)
+function effectiveStatus(s) {
+  const run = runs.get(s.runKey);
+  return sessionStatus(s, run ? run.usages.get(s.id) || null : null);
+}
+
 function sessionStatus(s, su) {
   let st = s.status || 'waiting';
   if (st === 'working' && su) {
@@ -509,7 +569,17 @@ function todayTotals() {
 }
 function rotationPhase() { return Math.floor(Date.now() / T.rotate) % 2; }
 
+function isPaused() {
+  const u = Number(cfg.pausedUntil) || 0;
+  return u === -1 || u > Date.now();
+}
+function promoButton(L) {
+  // "Get this plugin" – lets people who see the card find the project (promoButton: false hides it)
+  return cfg.promoButton && /^[\w.-]+\/[\w.-]+$/.test(cfg.updateRepo || '') ? { label: L.promoButton, url: `https://github.com/${cfg.updateRepo}` } : null;
+}
+
 function computePresence() {
+  if (isPaused()) return null;
   if (isChat()) { if (!chatSince) chatSince = Date.now(); return chatPresence(); }
   chatSince = null;
   const s = activeSession();
@@ -528,13 +598,15 @@ function computePresence() {
   const label = cfg.tokenScope === 'conversation' ? L.convTokens : L.sessionTokens;
   const cost = hasSource && cfg.showCost && scopeTotals.messages > scopeTotals.unpricedMessages ? formatCost(scopeTotals.costUsd, cfg.language) : null;
   const costPart = cost ? ` · ~${cost}${scopeTotals.unpricedMessages ? '+' : ''}` : '';
-  const status = sessionStatus(s, su);
+  let status = sessionStatus(s, su);
+  const awayMs = (Number(cfg.awayAfterMinutes) || 0) * 60000;
+  if (status === 'waiting' && awayMs > 0 && Date.now() - (s.statusSince || s.firstSeen || Date.now()) >= awayMs) status = 'away';
   // what Claude is doing (Editing files, Running commands…) instead of a plain "Working"
   const act = status === 'working' && cfg.showActivity !== false && s.activity && L.activity[s.activity] ? s.activity : null;
   const workingText = act ? L.activity[act] : L.working;
   let state;
   if (fmt === null) state = L.noData;
-  else if (cfg.showStatus) state = `${status === 'working' ? workingText : L.waiting} · ${fmt} ${L.tokensWord}${costPart}`;
+  else if (cfg.showStatus) state = `${status === 'working' ? workingText : status === 'away' ? L.away : L.waiting} · ${fmt} ${L.tokensWord}${costPart}`;
   else state = `${label}: ${fmt}${costPart}`;
   if (cfg.showSessionCount && sessions.size > 1) state += ` · ${sessions.size} ${L.sessions}`;
   // today's totals: every other rotation slot replaces the state line, or only the tooltip
@@ -563,11 +635,15 @@ function computePresence() {
   if (img) { assets.large_image = img; assets.large_text = largeText.length >= 2 ? largeText : 'Claude Code'; }
   if (cfg.showStatus) {
     const icon = assetUrl(status === 'working' ? 'status-working.png' : 'status-waiting.png');
-    if (icon && img) { assets.small_image = icon; assets.small_text = status === 'working' ? (act ? `Claude: ${L.activity[act].toLowerCase()}…` : L.workingLong) : L.waitingLong; }
+    if (icon && img) { assets.small_image = icon; assets.small_text = status === 'working' ? (act ? `Claude: ${L.activity[act].toLowerCase()}…` : L.workingLong) : status === 'away' ? L.awayLong : L.waitingLong; }
   }
   if (Object.keys(assets).length) activity.assets = assets;
   const link = name ? projectLink(s.projectRoot) : null; // never for hidden projects
-  if (link) activity.buttons = [{ label: /^https:\/\/github\.com\//i.test(link) ? L.githubButton : L.openButton, url: link }];
+  const buttons = [];
+  if (link) buttons.push({ label: /^https:\/\/github\.com\//i.test(link) ? L.githubButton : L.openButton, url: link });
+  const promo = promoButton(L);
+  if (promo && !(link && link.replace(/\/+$/, '').toLowerCase() === promo.url.toLowerCase())) buttons.push(promo);
+  if (buttons.length) activity.buttons = buttons.slice(0, 2);
   return {
     activity,
     debug: {
@@ -581,7 +657,7 @@ function computePresence() {
         compactBoundariesSeen: usages.reduce((a, u) => a + u.compactions, 0),
         mode: cfg.tokenCount, scope: cfg.tokenScope, includeSubagents: cfg.includeSubagents,
         sinceLaunch: agg.sinceLaunch, conversationTotal: agg.conversation, published: value,
-        cost: { published: cost, pricesDate: PRICES_DATE, basis: 'Anthropic API list prices; subscriptions are not billed per token' },
+        cost: { published: cost, pricesDate: pricing.pricesDate(), basis: 'Anthropic API list prices; subscriptions are not billed per token' },
       },
     },
   };
@@ -640,7 +716,9 @@ async function ensureDiscord() {
   try {
     await d.connect();
     discord = d; discordState = 'connected'; discordError = null; retryDelay = T.backoffMin;
-    lastPayloadJson = null; // po (ponownym) połączeniu wyślij aktywność od nowa – z tym samym znacznikiem start
+    // after a (re)connect: send the activity again (same start time) – or, when there is none
+    // (paused, no session), an explicit clear on the new connection
+    lastPayloadJson = '(reconnected)'; pendingPayload = undefined;
     log('discord connected');
     d.on('disconnected', () => { log('discord disconnected'); discord = null; scheduleRetry(new Error('disconnected')); });
     d.on('closeFrame', e => log('discord close frame', e.message));
@@ -672,7 +750,8 @@ function writeStatus(p) {
     config: { enabled: cfg.enabled, applicationIdSet: !!cfg.applicationId, applicationIdIsDefault: cfg.applicationIdIsDefault, tokenCount: cfg.tokenCount, tokenScope: cfg.tokenScope, hideProject: cfg.hideProject },
     discord: { state: discordState, error: discordError, nextRetryAt: nextRetryAt ? new Date(nextRetryAt).toISOString() : null, lastSentAt: lastSentAt ? new Date(lastSentAt).toISOString() : null },
     activityPayload: p ? p.activity : null,
-    version: versionLib.installedVersion(), update: updateInfo,
+    version: versionLib.installedVersion(), update: updateInfo, pricesDate: pricing.pricesDate(),
+    paused: isPaused() ? (Number(cfg.pausedUntil) === -1 ? 'until resume' : new Date(Number(cfg.pausedUntil)).toISOString()) : null,
     claudeApp: { windowVisible: appState.visible, tab: appState.mode, showingChat: isChat(), platform: process.platform, ...(macInfo ? { mac: macInfo } : process.platform === 'darwin' ? { mac: { state: 'not watched', accessibility: cfg.macAccessibility ? 'requested' : 'off' } } : {}) },
     sentToDiscord: lastPayloadJson ? JSON.parse(lastPayloadJson) : null,
     active: p ? p.debug : null,
@@ -685,10 +764,14 @@ function writeStatus(p) {
 async function tick() {
   if (shuttingDown) return;
   try {
+    // a config.json caught mid-write (or broken by hand) must not flip everything to the
+    // defaults for a tick – keep the last good configuration until it parses again
+    if (!C.configReadable()) return;
     const newCfg = C.loadConfig();
     if (JSON.stringify(newCfg) !== JSON.stringify(cfg)) {
       const appChanged = newCfg.applicationId !== cfg.applicationId;
-      cfg = newCfg; C.setLogMax(cfg.logMaxBytes); lastPayloadJson = null;
+      // resend (or clear, e.g. after `pause`) – null would mean "nothing is shown" and skip the clear
+      cfg = newCfg; C.setLogMax(cfg.logMaxBytes); lastPayloadJson = '(config changed)';
       if (appChanged && discord) { try { discord.close(); } catch {} discord = null; nextRetryAt = 0; retryDelay = T.backoffMin; }
       log('config reloaded');
     }
@@ -760,6 +843,7 @@ async function main() {
   server.on('error', e => log('server error', e));
   log('daemon started', process.version, process.platform, process.arch, 'appId', cfg.applicationIdIsDefault ? 'built-in' : 'custom', process.argv.includes('--standby') ? '(standby)' : '');
   loadRegistry();
+  loadCachedPrices();
   noSessionsSince = Date.now();
   setInterval(tick, T.tick);
   tick();

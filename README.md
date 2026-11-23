@@ -36,14 +36,18 @@ on Discord** – just the desktop Discord client's local RPC.
 - **Model and effort** in the image tooltip, e.g. `Opus 5.5 · high effort`.
 - **Today's totals** across all your sessions and projects, e.g. `Today: 1.2M tokens · ~$25`,
   rotating with the session line.
-- **Project buttons** – an optional `View on GitHub` button for the projects you choose.
+- **Project buttons** – an optional `View on GitHub` button for the projects you choose, plus a
+  **Get this plugin** button so people who see your card can find this project.
+- **Pause and Away** – `pause 1h` hides the card for a while; optionally the card says *Away* after
+  you have not sent a prompt for a set time.
+- **`doctor`** – one command that checks the usual reasons nothing shows on Discord and says what to do.
 - **Native Discord timer** counting from when Claude Code was launched; it never resets on updates
   or reconnects.
 - **Multiple sessions** – shows the session you last typed in; switches when one closes, even after
   a terminal crash.
 - **Claude desktop app aware** – hides when you close the window, shows `Chatting with Claude` in
   the regular chat tab (optionally from sign-in, without a Code session).
-- **One-command update** from GitHub.
+- **Updates** – one command, or automatically (opt-in); the price table refreshes itself daily.
 - **Plays nicely with VS Code** – uses the “Watching” activity type, so it is shown next to (and
   below) the VS Code Discord extension instead of replacing it.
 - **Private by design** – only the project name, token count, cost and timer are sent. Never
@@ -164,6 +168,13 @@ node ~/.claude/discord-presence/cli.js <command>
 | `update --main` | Install the `main` branch (unreleased changes) |
 | `update <version>` | Install a specific release, e.g. `update 1.1.0` – also to go back to an older one |
 | `update-check on\|off` | Check GitHub once a day for a newer release (shown in `status`) |
+| `auto-update on\|off` | Install new releases automatically, only while Claude is not working (off by default) |
+| `doctor` | Check Node, hooks, Discord, the background process, sessions and the log – with fixes |
+| `pause [duration]` | Hide the card for a while: `30m`, `1h` (default), `2h30m`, `90` (minutes), `forever` |
+| `resume` | Show the card again |
+| `away <minutes\|off>` | Say *Away* after that long without a prompt (off by default) |
+| `promo on\|off` | The *Get this plugin* button on your card |
+| `prices` | Date of the price table used for the cost estimate |
 | `chat on\|off` | Show or hide the activity in the regular Claude chat tab |
 | `type <watching\|playing\|competing\|listening>` | Discord activity type (see [VS Code](#using-it-with-the-vs-code-discord-extension)) |
 | `tokens <no_cache_read\|all\|output>` | What the token counter includes (see [Tokens](#how-tokens-are-counted)) |
@@ -194,6 +205,11 @@ The commands above edit it for you; [`config.example.json`](config.example.json)
 | `showStatus` | `true` | Working/waiting text and badge |
 | `showActivity` | `true` | What Claude is doing instead of a plain “Working” |
 | `checkUpdates` | `true` | Daily check for a newer release on GitHub |
+| `autoUpdate` | `false` | Install new releases automatically (`auto-update on`) |
+| `updatePrices` | `true` | Refresh the price table from this repository once a day |
+| `promoButton` | `true` | *Get this plugin* button linking to `updateRepo` |
+| `awayAfterMinutes` | `0` | Minutes without a prompt before the card says *Away* (0 = off) |
+| `pausedUntil` | `0` | Set by `pause` / `resume` (time in ms, `-1` = until resume) |
 | `showModel` | `true` | Model and effort in the image tooltip |
 | `showToday` | `"rotate"` | `rotate`, `tooltip` or `off` |
 | `links` | `{}` | `{ "folder-name or full path": "https://…" }` – project buttons |
@@ -255,6 +271,18 @@ credentials in it are dropped). Only link public pages – the button is visible
 projects never get a button. Discord shows buttons to other people, not on your own view of your
 profile.
 
+The card also shows a **Get this plugin** button linking to this repository, so people who see it
+can install it too (next to a project's own button – Discord allows two). `promo off` removes it.
+
+## Pause and Away
+
+- `pause` hides the card for an hour (`pause 30m`, `pause 2h30m`, `pause forever`) – e.g. for a
+  meeting or a stream – and it comes back by itself; `resume` shows it at once. The timer and the
+  counters are not reset. `status` says when the pause ends.
+- `away 30` makes the card say **Away** after 30 minutes without a prompt (badge tooltip: *Away –
+  waiting for a prompt*); the next prompt switches back to *Thinking*. Off by default – waiting is
+  never treated as closing Claude.
+
 ## Autostart (optional)
 
 By default the background process is started by Claude Code hooks – nothing runs at sign-in.
@@ -307,6 +335,11 @@ back). It downloads that version as a ZIP, unpacks it with a system tool
 never through a shell string), runs its installer and keeps your configuration and Application ID.
 A failed download, unpack or install is reported as a failure (exit code 1) and the temporary files
 are removed either way. From a clone, `git pull` followed by `node install.js` does the same.
+
+**Automatic updates** (`auto-update on`, off by default): when the daily check finds a newer
+release, the background process installs it with `update --auto` – only while no Claude session is
+working, at most once a day per version – and starts the new version. The output goes to
+`logs/auto-update.log`. Releases are tested on Windows and macOS before they are published.
 
 ## How it works
 
@@ -368,8 +401,11 @@ claude ──hooks──▶ hook.js ──event file──▶ daemon.js ──lo
 
 - Every response is priced by its own model using **all** usage components: input, output, cache
   reads and cache writes (5-minute and 1-hour priced separately). Fast mode counts 2×.
-- Prices are Anthropic's API list prices in [`app/lib/pricing.js`](app/lib/pricing.js) (as of
-  2026-11-03), e.g. Opus 5.5: $4 input / $20 output / $0.20 cache read per million tokens.
+- Prices are Anthropic's API list prices in [`app/pricing.json`](app/pricing.json), e.g. Opus 5.5:
+  $4 input / $20 output / $0.20 cache read per million tokens. The background process refreshes
+  that file from this repository's `main` branch once a day, so a new model gets a price without
+  a new release: only plain numbers and simple model names are accepted, and a table older than
+  the installed one is ignored. `prices` shows the date in use; `updatePrices: false` turns it off.
 - **This is the API-equivalent value, not your bill** – Pro/Max subscriptions are not charged per
   token. Responses from models without a known price are left out and marked with `+`.
 
@@ -426,18 +462,20 @@ To enable the extra detection:
 
 Sent to Discord: project name or alias (or “Project hidden”), Claude's working/waiting state,
 token counts (session and today), estimated cost, model and effort, start time, images, and the
-project buttons you add yourself. **Never** prompts, responses, file contents, paths or repository URLs. The hook
+project buttons you add yourself plus the *Get this plugin* link (`promo off`). **Never** prompts, responses, file contents, paths or repository URLs. The hook
 does not read prompt text, and nothing in this project ever calls a model.
 
 The app icon is looked up once from Discord's public application endpoint using only your public
 Application ID. The daily update check asks the public GitHub API for the latest release of this
-repository (no token, nothing about you; `update-check off`). Local diagnostics (`state\`, size-limited `logs\`) stay on your machine; on
+repository (no token, nothing about you; `update-check off`), and the price table is read from
+the repository the same way (`updatePrices: false`). Local diagnostics (`state\`, size-limited `logs\`) stay on your machine; on
 macOS they, and the daemon socket, are readable by your user only.
 
 ## Troubleshooting
 
 | Problem | Try |
 |---|---|
+| Anything | Run `cli.js doctor` first – it checks the usual causes and prints what to do. |
 | Nothing on Discord | `cli.js status` – check `Discord: connected` and the payload. Make sure *Settings → Activity Privacy → Share your activity* is on in Discord. |
 | `Discord is not running` | Start the Discord desktop app; the integration reconnects by itself. |
 | `Invalid Client ID` in `logs` | Your own Application ID is wrong – re-copy it (`cli.js set-app-id <ID>`) or go back to the built-in app: `cli.js set-app-id default`. |
@@ -487,8 +525,10 @@ Release with two downloads built by [`tools/build-release.js`](tools/build-relea
 no dependencies): a macOS ZIP with the executable `install-macos.command` and a Windows ZIP with
 `install-windows.cmd` (CRLF). Build them locally with `node tools/build-release.js 1.2.3`.
 
-To release: bump [`app/version.json`](app/version.json), merge, then push the matching tag
-(`v` + that version). The release workflow refuses a tag that does not match `app/version.json`,
+To release: bump [`app/version.json`](app/version.json), add a section for that version to
+[`CHANGELOG.md`](CHANGELOG.md), merge, then push the matching tag (`v` + that version). The
+release notes are that CHANGELOG section, the download instructions and GitHub's list of merged
+pull requests; a tag without a CHANGELOG entry is refused. The release workflow refuses a tag that does not match `app/version.json`,
 so `cli.js version` and the update check always agree with the published release.
 
 ### Known limitations

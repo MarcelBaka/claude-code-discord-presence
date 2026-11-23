@@ -56,6 +56,13 @@ const help = `Discord Rich Presence for Claude Code
   node cli.js unlink <folder>
   node cli.js autostart <on|off>   start at sign-in (Windows: Startup folder, macOS: LaunchAgent)
   node cli.js mac-accessibility <on|off>   macOS: use Accessibility to tell minimized windows from closed ones
+  node cli.js doctor               check why nothing shows on Discord (and what to do)
+  node cli.js pause [duration]     hide the card for a while: 30m, 1h (default), 2h30m, forever
+  node cli.js resume               show the card again
+  node cli.js away <minutes|off>   say "Away" after waiting that long for your prompt
+  node cli.js promo <on|off>       the "Get this plugin" button on your card
+  node cli.js auto-update <on|off> install new releases automatically (when Claude is not working)
+  node cli.js prices               date of the price table used for the cost estimate
   node cli.js version              installed version and the latest release on GitHub
   node cli.js update [--force]     install the latest release from GitHub (keeps your config)
   node cli.js update --main        install the main branch (unreleased changes)
@@ -73,6 +80,16 @@ const help = `Discord Rich Presence for Claude Code
 `;
 
 const fail = msg => { console.error(msg); process.exit(1); };
+
+// 30m, 1h, 2h30m, 45s, 90 (minutes), forever → ms (-1 = forever); null when invalid
+function parseDuration(s) {
+  if (s === 'forever' || s === 'until-resume') return -1;
+  if (/^\d+$/.test(s)) return Number(s) * 60000;
+  const m = /^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(s);
+  if (!m || !s) return null;
+  const ms = ((+m[1] || 0) * 86400 + (+m[2] || 0) * 3600 + (+m[3] || 0) * 60 + (+m[4] || 0)) * 1000;
+  return ms > 0 && ms <= 30 * 86400e3 ? ms : null;
+}
 
 // https URL of a repository's "origin" remote (git@github.com:a/b.git → https://github.com/a/b)
 function gitRemoteUrl(dir) {
@@ -93,7 +110,8 @@ function gitRemoteUrl(dir) {
 
 async function update(argv) {
   const force = argv.includes('--force');
-  const rest = argv.filter(a => a !== '--force');
+  const auto = argv.includes('--auto');
+  const rest = argv.filter(a => a !== '--force' && a !== '--auto');
   const ref = rest.includes('--main') ? 'main' : (rest.find(a => !a.startsWith('-')) || 'release');
   let r;
   try {
@@ -102,6 +120,12 @@ async function update(argv) {
   if (r && r.status === 'updated') {
     try { fs.rmSync(path.join(C.P.data, 'state', 'update-check.json'), { force: true }); } catch {}
     console.log(`Updated to ${r.label}. Restart open Claude Code sessions if the hooks changed.`);
+    if (auto) {
+      // started by the background process, which the installer stopped: start the new version
+      const { spawn } = require('child_process');
+      spawn(require('./lib/nodepath').stableNodePath(), [path.join(C.P.app, 'daemon.js')], { detached: true, stdio: 'ignore', windowsHide: true, cwd: C.P.data }).unref();
+      console.log(`[${new Date().toISOString()}] auto-update finished; background process restarted`);
+    }
   }
 }
 
@@ -127,6 +151,7 @@ async function showVersion(argv) {
       const cfg = C.loadConfig();
       if (args.includes('--json')) { console.log(JSON.stringify({ daemonRunning: alive, config: cfg, status: st }, null, 2)); break; }
       console.log(`Integration: ${cfg.enabled ? 'enabled' : 'DISABLED'}   version: ${require('./lib/version').installedVersion(C.P.app) || 'unknown'}`);
+      if (st && st.paused) console.log(`PAUSED ${st.paused === 'until resume' ? 'until you resume' : `until ${new Date(st.paused).toLocaleString()}`} – node cli.js resume`);
       if (st && st.update && st.update.updateAvailable) console.log(`Update available: ${st.update.latest} (installed ${st.update.installed}) – run: node cli.js update`);
       console.log(`Discord application: ${cfg.applicationIdIsDefault ? `built-in "ClaudeCode" (${cfg.applicationId}) – your own: node cli.js set-app-id <ID>` : `your own (${cfg.applicationId})`}`);
       console.log(`Autostart at sign-in: ${autostart.isEnabled() ? `on (${autostart.filePath()})` : 'off'}`);
@@ -251,6 +276,51 @@ async function showVersion(argv) {
     }
     case 'update': await update(args); break;
     case 'version': case '--version': case '-v': await showVersion(args); break;
+    case 'doctor': {
+      const D = require('./lib/doctor');
+      const res = await D.runChecks();
+      console.log(D.format(res));
+      if (res.some(x => x.level === D.FAIL)) process.exitCode = 1;
+      break;
+    }
+    case 'pause': {
+      const arg = (args[0] || '1h').toLowerCase();
+      if (arg === 'off') { editConfig(c => { c.pausedUntil = 0; }); console.log('Resumed – the card is shown again.'); break; }
+      const ms = parseDuration(arg);
+      if (ms === null) fail('Usage: pause [30m|1h|2h30m|90|forever]  (a bare number means minutes)');
+      const until = ms === -1 ? -1 : Date.now() + ms;
+      editConfig(c => { c.pausedUntil = until; });
+      console.log(until === -1 ? 'Paused until you run: node cli.js resume' : `Paused until ${new Date(until).toLocaleString()} – the card is hidden. (node cli.js resume to show it now)`);
+      break;
+    }
+    case 'resume':
+      editConfig(c => { c.pausedUntil = 0; });
+      console.log('Resumed – the card is shown again.');
+      break;
+    case 'away': {
+      const a = (args[0] || '').toLowerCase();
+      const n = a === 'off' ? 0 : Number(a);
+      if (!Number.isFinite(n) || n < 0 || n > 1440 || (a !== 'off' && !/^\d+$/.test(a))) fail('Usage: away <minutes|off>, e.g. away 30');
+      editConfig(c => { c.awayAfterMinutes = n; });
+      console.log(n ? `The card says "Away" after ${n} minute(s) of waiting for your prompt.` : 'Away state off.');
+      break;
+    }
+    case 'promo':
+      if (!['on', 'off'].includes(args[0])) fail('Usage: promo <on|off>');
+      editConfig(c => { c.promoButton = args[0] === 'on'; }); console.log('Done.');
+      break;
+    case 'auto-update':
+      if (!['on', 'off'].includes(args[0])) fail('Usage: auto-update <on|off>');
+      editConfig(c => { c.autoUpdate = args[0] === 'on'; if (args[0] === 'on') c.checkUpdates = true; });
+      console.log(args[0] === 'on' ? 'New releases will be installed automatically (checked daily, only while Claude is not working).' : 'Automatic updates off – `status` still tells you about new releases.');
+      break;
+    case 'prices': {
+      const pr = require('./lib/pricing');
+      const st = C.readJson(C.P.status, null);
+      console.log(`Installed price table: ${pr.pricesDate()}${st && st.pricesDate && st.pricesDate !== pr.pricesDate() ? `\nIn use by the background process: ${st.pricesDate} (refreshed from GitHub)` : ''}`);
+      console.log('Prices are Anthropic API list prices; the background process refreshes them from the repository once a day (updatePrices: false turns that off).');
+      break;
+    }
     case 'activity':
       if (!['on', 'off'].includes(args[0])) fail('Usage: activity <on|off>');
       editConfig(c => { c.showActivity = args[0] === 'on'; }); console.log('Done.');

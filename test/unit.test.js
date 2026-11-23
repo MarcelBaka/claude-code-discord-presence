@@ -702,3 +702,107 @@ test('application id: built-in by default, your own wins, invalid ignored, set-a
   assert.strictEqual(JSON.parse(fs.readFileSync(cfgFile, 'utf8')).applicationId, '');
   assert.notStrictEqual(cli('set-app-id', 'abc').status, 0);
 });
+
+test('pricing.json: validated table, newer table applied, older or broken rejected', () => {
+  const pr = require('../app/lib/pricing');
+  const bundledDoc = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'app', 'pricing.json'), 'utf8'));
+  assert.match(pr.pricesDate(), /^\d{4}-\d{2}-\d{2}$/);
+  assert.ok(pr.priceFor('claude-opus-5-5').input > 0);
+  assert.throws(() => pr.parsePricing({}), /no model list/);
+  assert.throws(() => pr.parsePricing({ models: [['claude-x', { input: 'cheap', output: 1, w5: 1, w1: 1, read: 1 }]] }), /bad input/);
+  assert.throws(() => pr.parsePricing({ models: [['CLAUDE X; rm', { input: 1, output: 1, w5: 1, w1: 1, read: 1 }]] }), /bad model prefix/);
+  assert.throws(() => pr.parsePricing({ models: [['claude-x', { input: -1, output: 1, w5: 1, w1: 1, read: 1 }]] }), /bad input/);
+  try {
+    const newer = { date: '2099-01-01', models: [['claude-newmodel-9', { input: 1, output: 2, w5: 1.25, w1: 2, read: 0.1 }], ...bundledDoc.models] };
+    assert.strictEqual(pr.setPricing(newer), true);
+    assert.strictEqual(pr.pricesDate(), '2099-01-01');
+    assert.strictEqual(pr.priceFor('claude-newmodel-9').output, 2, 'a new model gets a price without a release');
+    assert.strictEqual(pr.setPricing({ ...bundledDoc, date: '2000-01-01' }), false, 'never older than the installed table');
+    assert.strictEqual(pr.pricesDate(), '2099-01-01');
+  } finally { pr.setPricing(bundledDoc); }
+  assert.strictEqual(pr.priceFor('claude-newmodel-9'), null);
+});
+
+test('CHANGELOG: release notes per version; the current version has an entry', () => {
+  const { changelogSection, build } = require('../tools/release-notes');
+  const md = '# Changelog\n\n## 2.0.0 – 2027-01-01\n\n### Added\n- B\n\n## 1.9.0 – 2026-12-01\n\n- A\n';
+  assert.strictEqual(changelogSection(md, 'v2.0.0'), '### Added\n- B');
+  assert.strictEqual(changelogSection(md, '1.9.0'), '- A');
+  assert.strictEqual(changelogSection(md, '1.9'), null);
+  assert.strictEqual(changelogSection(md, '3.0.0'), null);
+  const v = require('../app/version.json').version;
+  const notes = build(v);
+  assert.match(notes, /^## What's new/);
+  assert.match(notes, /## Downloads/);
+  assert.throws(() => build('99.0.0'), /no section for 99\.0\.0/);
+});
+
+test('doctor: findings with fixes; missing Discord, hooks pointing to missing files, paused', async () => {
+  const D = require('../app/lib/doctor');
+  assert.deepStrictEqual(D.commandPaths('"C:/Program Files/nodejs/node.exe" "C:/x/hook.js" Stop'), ['C:/Program Files/nodejs/node.exe', 'C:/x/hook.js']);
+  assert.deepStrictEqual(D.commandPaths(`'/opt/node' '/Users/o'\\''brien/hook.js' Stop`), ['/opt/node', "/Users/o'brien/hook.js"]);
+  const settings = path.join(tmp, 'doctor-settings.json');
+  fs.writeFileSync(settings, JSON.stringify(S.addOurs({}, path.join(tmp, 'no-node.exe'), path.join(tmp, 'no', 'discord-presence', 'hook.js'), 'win32')));
+  const cfgFile = path.join(process.env.CDP_DATA_DIR, 'config.json');
+  fs.mkdirSync(path.dirname(cfgFile), { recursive: true });
+  const before = fs.existsSync(cfgFile) ? fs.readFileSync(cfgFile, 'utf8') : null;
+  fs.writeFileSync(cfgFile, JSON.stringify({ pausedUntil: -1 }));
+  const prevS = process.env.CDP_SETTINGS; process.env.CDP_SETTINGS = settings;
+  try {
+    const res = await D.runChecks({ discordPaths: [], pingDaemon: async () => false });
+    const find = re => res.find(x => re.test(x.title));
+    assert.strictEqual(find(/Discord desktop is not running/).level, 'fail');
+    assert.strictEqual(find(/hooks installed \(7\/7\)/).level, 'ok');
+    assert.strictEqual(find(/missing file/).level, 'fail');
+    assert.strictEqual(find(/Paused until you resume/).level, 'warn');
+    assert.match(find(/Paused/).fix, /resume/);
+    assert.strictEqual(find(/Background process not running/).level, 'warn');
+    assert.match(D.format(res), /problem\(s\) to fix/);
+  } finally {
+    if (prevS === undefined) delete process.env.CDP_SETTINGS; else process.env.CDP_SETTINGS = prevS;
+    if (before === null) fs.rmSync(cfgFile, { force: true }); else fs.writeFileSync(cfgFile, before);
+  }
+});
+
+test('cli: pause/resume durations, away minutes, promo and auto-update switches', () => {
+  const { spawnSync } = require('child_process');
+  const data = path.join(tmp, 'cli-v13'); fs.mkdirSync(data, { recursive: true });
+  const cfg = () => JSON.parse(fs.readFileSync(path.join(data, 'config.json'), 'utf8'));
+  const run = (...a) => spawnSync(process.execPath, [path.join(__dirname, '..', 'app', 'cli.js'), ...a], { env: { ...process.env, CDP_DATA_DIR: data }, encoding: 'utf8' });
+  let t = Date.now(); assert.strictEqual(run('pause', '30m').status, 0);
+  assert.ok(Math.abs(cfg().pausedUntil - (t + 30 * 60000)) < 5000);
+  t = Date.now(); run('pause', '2h30m'); assert.ok(Math.abs(cfg().pausedUntil - (t + 150 * 60000)) < 5000);
+  t = Date.now(); run('pause', '45'); assert.ok(Math.abs(cfg().pausedUntil - (t + 45 * 60000)) < 5000, 'a bare number means minutes');
+  t = Date.now(); run('pause'); assert.ok(Math.abs(cfg().pausedUntil - (t + 3600e3)) < 5000, 'default 1h');
+  run('pause', 'forever'); assert.strictEqual(cfg().pausedUntil, -1);
+  run('resume'); assert.strictEqual(cfg().pausedUntil, 0);
+  assert.notStrictEqual(run('pause', 'soon').status, 0);
+  assert.notStrictEqual(run('pause', '0m').status, 0);
+  run('away', '30'); assert.strictEqual(cfg().awayAfterMinutes, 30);
+  run('away', 'off'); assert.strictEqual(cfg().awayAfterMinutes, 0);
+  assert.notStrictEqual(run('away', 'later').status, 0);
+  run('promo', 'off'); assert.strictEqual(cfg().promoButton, false);
+  run('auto-update', 'on'); assert.deepStrictEqual([cfg().autoUpdate, cfg().checkUpdates], [true, true]);
+  run('auto-update', 'off'); assert.strictEqual(cfg().autoUpdate, false);
+});
+
+test('configReadable: a config.json caught mid-write is not read as "all defaults"', () => {
+  const C = require('../app/lib/common');
+  const f = C.P.config;
+  const before = fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null;
+  try {
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.rmSync(f, { force: true });
+    assert.strictEqual(C.configReadable(), true, 'no file → defaults are fine');
+    fs.writeFileSync(f, '{"enabled": true, "language": "pl"');
+    assert.strictEqual(C.configReadable(), false, 'half-written');
+    fs.writeFileSync(f, '');
+    assert.strictEqual(C.configReadable(), false, 'empty (truncated before the write)');
+    fs.writeFileSync(f, '[1,2]');
+    assert.strictEqual(C.configReadable(), false, 'not an object');
+    fs.writeFileSync(f, '\uFEFF{"language":"pl"}');
+    assert.strictEqual(C.configReadable(), true, 'BOM is fine');
+  } finally {
+    if (before === null) fs.rmSync(f, { force: true }); else fs.writeFileSync(f, before);
+  }
+});

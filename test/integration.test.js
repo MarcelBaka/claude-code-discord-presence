@@ -33,7 +33,7 @@ const env = {
 fs.mkdirSync(env.CDP_DATA_DIR, { recursive: true });
 fs.mkdirSync(path.join(env.CDP_CLAUDE_DIR, 'sessions'), { recursive: true });
 fs.mkdirSync(env.CDP_PROJECTS_DIR, { recursive: true });
-fs.writeFileSync(path.join(env.CDP_DATA_DIR, 'config.json'), JSON.stringify({ checkUpdates: false, language: 'pl', largeImageKey: 'none', showStatus: false, showModel: false, showToday: 'off', showChat: false, assetBaseUrl: '', applicationId: '123456789012345678', aliases: { 'beta-repo': 'Beta – alias' } }));
+fs.writeFileSync(path.join(env.CDP_DATA_DIR, 'config.json'), JSON.stringify({ checkUpdates: false, promoButton: false, awayAfterMinutes: 0, pausedUntil: 0, language: 'pl', largeImageKey: 'none', showStatus: false, showModel: false, showToday: 'off', showChat: false, assetBaseUrl: '', applicationId: '123456789012345678', aliases: { 'beta-repo': 'Beta – alias' } }));
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function waitFor(fn, ms = 10000, what = 'warunek') {
@@ -395,7 +395,7 @@ const setCfg = patch => { const f = path.join(env.CDP_DATA_DIR, 'config.json'); 
 // a previous failed test must not leave its daemon (with another environment) running
 async function freshStart() {
   // earlier tests may leave the integration disabled (e.g. the autostart test ends with enabled:false)
-  setCfg({ enabled: true, checkUpdates: false, autostart: false, showChat: false, showStatus: false, showModel: false, showToday: 'off', language: 'pl' });
+  setCfg({ enabled: true, checkUpdates: false, promoButton: false, awayAfterMinutes: 0, pausedUntil: 0, autostart: false, showChat: false, showStatus: false, showModel: false, showToday: 'off', language: 'pl' });
   for (const p of procs) { try { p.kill('SIGKILL'); } catch {} }
   if (await daemonAlive()) {
     // read the reply (an unread, paused socket never emits 'close') and never wait forever
@@ -780,4 +780,107 @@ test('late async PreToolUse (started before Stop, stdin delayed until after it) 
   p.kill('SIGKILL');
   await waitFor(() => discord.last().activity === null, 15000, 'cleared');
   await discord.stop();
+});
+
+test('"Get this plugin" button, pause/resume with the same timer, Away after waiting', { timeout: 60000 }, async () => {
+  await freshStart();
+  setCfg({ language: 'en', showStatus: true, largeImageKey: 'none', promoButton: true, updateRepo: 'someone/the-plugin', links: { 'promo-repo': 'https://github.com/someone/promo-repo' } });
+  const discord = new FakeDiscord(); await discord.start();
+  const repo = path.join(tmp, 'promo-repo'); fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  const tr = path.join(tmp, 'projects', 'pr1.jsonl'); fs.writeFileSync(tr, asst('pr1m', Date.now(), [0, 100, 0, 0]));
+  const start = Date.now() - 2000;
+  const p = fakeClaude('pr1', start);
+  const last = () => discord.last() && discord.last().activity;
+  await hook({ hook_event_name: 'SessionStart', session_id: 'pr1', transcript_path: tr, cwd: repo, source: 'startup' });
+  const a = await waitFor(() => { const x = last(); return x && x.buttons && x; }, 15000, 'buttons');
+  assert.deepStrictEqual(a.buttons, [
+    { label: 'View on GitHub', url: 'https://github.com/someone/promo-repo' },
+    { label: 'Get this plugin', url: 'https://github.com/someone/the-plugin' },
+  ]);
+  // no project link → only the plugin button
+  setCfg({ links: {} });
+  await waitFor(() => { const x = last(); return x && x.buttons && x.buttons.length === 1 && x.buttons[0].label === 'Get this plugin'; }, 15000, 'promo only');
+  setCfg({ promoButton: false });
+  await waitFor(() => { const x = last(); return x && !x.buttons; }, 15000, 'promo off');
+
+  // pause hides the card, resume brings it back with the same timer
+  setCfg({ pausedUntil: Date.now() + 3600e3 });
+  await waitFor(() => discord.last().activity === null, 15000, 'paused');
+  await sleep(3500);
+  assert.ok(await daemonAlive(), 'pause does not stop the process');
+  assert.strictEqual(discord.last().activity, null);
+  assert.ok(status().paused, 'status says paused');
+  // Discord restarts while paused: the new connection gets an explicit clear, not the old card
+  const hs = discord.handshakes;
+  await discord.stop(); discord.activities = [];
+  await discord.start();
+  await waitFor(() => discord.handshakes > hs && discord.activities.length > 0, 15000, 'reconnected while paused');
+  assert.strictEqual(discord.last().activity, null, 'cleared on the new connection');
+  setCfg({ pausedUntil: 0 });
+  const back = await waitFor(() => { const x = last(); return x && x; }, 15000, 'resumed');
+  assert.strictEqual(back.timestamps.start, start);
+  // a pause that expires ends by itself (long enough for a slow CI machine to see it first)
+  setCfg({ pausedUntil: Date.now() + 5000 });
+  await waitFor(() => discord.last().activity === null, 15000, 'short pause');
+  await waitFor(() => !!last(), 15000, 'pause expired');
+
+  // Away: waiting longer than awayAfterMinutes (fractional only for the test: 0.02 min = 1.2 s)
+  setCfg({ awayAfterMinutes: 0.02 });
+  await waitFor(() => { const x = last(); return x && x.state && x.state.startsWith('Away · '); }, 15000, 'Away');
+  await hook({ hook_event_name: 'UserPromptSubmit', session_id: 'pr1', transcript_path: tr, cwd: repo, prompt: 'x', prompt_id: 'A1' });
+  await waitFor(() => { const x = last(); return x && x.state && x.state.startsWith('Thinking · '); }, 15000, 'working again');
+
+  p.kill('SIGKILL');
+  await waitFor(() => discord.last().activity === null, 15000, 'cleared');
+  await discord.stop();
+});
+
+test('auto-update: waits while Claude works (Esc counts as idle), runs the updater once, retries after a failed update', { timeout: 60000 }, async () => {
+  await freshStart();
+  const fakeInfo = path.join(tmp, 'fake-update.json');
+  fs.writeFileSync(fakeInfo, JSON.stringify({ installed: '1.3.0', latest: '9.9.9', updateAvailable: true }));
+  const calls = path.join(tmp, 'updater-calls.txt');
+  try { fs.rmSync(calls); } catch {}
+  const fakeUpdater = path.join(tmp, 'fake-updater.js');
+  // records its arguments and fails like a broken download would
+  fs.writeFileSync(fakeUpdater, `require('fs').appendFileSync(${JSON.stringify(calls)}, process.argv.slice(2).join(' ') + '\\n'); process.exit(3);`);
+  env.CDP_FAKE_UPDATE = fakeInfo; env.CDP_AUTO_UPDATE_SCRIPT = fakeUpdater;
+  const autoFile = path.join(env.CDP_DATA_DIR, 'state', 'auto-update.json');
+  try { fs.rmSync(autoFile); } catch {}
+  const callCount = () => { try { return fs.readFileSync(calls, 'utf8').trim().split('\n').filter(Boolean).length; } catch { return 0; } };
+  const discord = new FakeDiscord(); await discord.start();
+  try {
+    const repo = path.join(tmp, 'au-repo'); fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+    const tr = path.join(tmp, 'projects', 'au1.jsonl'); fs.writeFileSync(tr, asst('au1m', Date.now(), [0, 10, 0, 0]));
+    const p = fakeClaude('au1', Date.now() - 1000);
+    const base = { session_id: 'au1', transcript_path: tr, cwd: repo };
+    setCfg({ autoUpdate: false });
+    await hook({ ...base, hook_event_name: 'SessionStart', source: 'startup' });
+    await hook({ ...base, hook_event_name: 'UserPromptSubmit', prompt: 'x', prompt_id: 'U1' });
+    await waitFor(() => sessionsInStatus().some(s => s.id === 'au1'), 15000, 'session tracked');
+    setCfg({ autoUpdate: true });
+    await sleep(2500);
+    assert.strictEqual(callCount(), 0, 'no update while Claude is working');
+
+    // Esc: no Stop hook, an interrupt marker in the transcript → effectively idle → update runs
+    fs.appendFileSync(tr, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] } }) + '\n');
+    await waitFor(() => callCount() === 1, 15000, 'updater started after Esc');
+    assert.strictEqual(fs.readFileSync(calls, 'utf8').trim(), 'update --auto');
+    assert.strictEqual(JSON.parse(fs.readFileSync(autoFile, 'utf8')).version, '9.9.9');
+    await waitFor(() => /auto-update failed \(exit 3\)/.test(logText()), 15000, 'failure logged');
+
+    // the same version is not retried within the cooldown…
+    await sleep(2500);
+    assert.strictEqual(callCount(), 1, 'cooldown respected');
+    // …but the latch was released: once the cooldown is over (record removed), it runs again
+    fs.rmSync(autoFile);
+    await waitFor(() => callCount() === 2, 15000, 'retried after the cooldown');
+
+    p.kill('SIGKILL');
+    await waitFor(() => discord.last() === undefined || discord.last().activity === null, 15000, 'cleared');
+  } finally {
+    setCfg({ autoUpdate: false });
+    delete env.CDP_FAKE_UPDATE; delete env.CDP_AUTO_UPDATE_SCRIPT;
+    await discord.stop();
+  }
 });
