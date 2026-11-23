@@ -33,7 +33,7 @@ const env = {
 fs.mkdirSync(env.CDP_DATA_DIR, { recursive: true });
 fs.mkdirSync(path.join(env.CDP_CLAUDE_DIR, 'sessions'), { recursive: true });
 fs.mkdirSync(env.CDP_PROJECTS_DIR, { recursive: true });
-fs.writeFileSync(path.join(env.CDP_DATA_DIR, 'config.json'), JSON.stringify({ checkUpdates: false, language: 'pl', largeImageKey: 'none', showStatus: false, showModel: false, showToday: 'off', showChat: false, assetBaseUrl: '', applicationId: '123456789012345678', aliases: { 'beta-repo': 'Beta – alias' } }));
+fs.writeFileSync(path.join(env.CDP_DATA_DIR, 'config.json'), JSON.stringify({ checkUpdates: false, promoButton: false, awayAfterMinutes: 0, pausedUntil: 0, language: 'pl', largeImageKey: 'none', showStatus: false, showModel: false, showToday: 'off', showChat: false, assetBaseUrl: '', applicationId: '123456789012345678', aliases: { 'beta-repo': 'Beta – alias' } }));
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function waitFor(fn, ms = 10000, what = 'warunek') {
@@ -395,7 +395,7 @@ const setCfg = patch => { const f = path.join(env.CDP_DATA_DIR, 'config.json'); 
 // a previous failed test must not leave its daemon (with another environment) running
 async function freshStart() {
   // earlier tests may leave the integration disabled (e.g. the autostart test ends with enabled:false)
-  setCfg({ enabled: true, checkUpdates: false, autostart: false, showChat: false, showStatus: false, showModel: false, showToday: 'off', language: 'pl' });
+  setCfg({ enabled: true, checkUpdates: false, promoButton: false, awayAfterMinutes: 0, pausedUntil: 0, autostart: false, showChat: false, showStatus: false, showModel: false, showToday: 'off', language: 'pl' });
   for (const p of procs) { try { p.kill('SIGKILL'); } catch {} }
   if (await daemonAlive()) {
     // read the reply (an unread, paused socket never emits 'close') and never wait forever
@@ -776,6 +776,53 @@ test('late async PreToolUse (started before Stop, stdin delayed until after it) 
   await hook({ ...base, hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: {}, prompt_id: 'P2' });
   await sleep(1500);
   assert.ok(last().state.startsWith('Thinking · '), `older prompt changed the activity: ${last().state}`);
+
+  p.kill('SIGKILL');
+  await waitFor(() => discord.last().activity === null, 15000, 'cleared');
+  await discord.stop();
+});
+
+test('"Get this plugin" button, pause/resume with the same timer, Away after waiting', { timeout: 60000 }, async () => {
+  await freshStart();
+  setCfg({ language: 'en', showStatus: true, largeImageKey: 'none', promoButton: true, updateRepo: 'someone/the-plugin', links: { 'promo-repo': 'https://github.com/someone/promo-repo' } });
+  const discord = new FakeDiscord(); await discord.start();
+  const repo = path.join(tmp, 'promo-repo'); fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  const tr = path.join(tmp, 'projects', 'pr1.jsonl'); fs.writeFileSync(tr, asst('pr1m', Date.now(), [0, 100, 0, 0]));
+  const start = Date.now() - 2000;
+  const p = fakeClaude('pr1', start);
+  const last = () => discord.last() && discord.last().activity;
+  await hook({ hook_event_name: 'SessionStart', session_id: 'pr1', transcript_path: tr, cwd: repo, source: 'startup' });
+  const a = await waitFor(() => { const x = last(); return x && x.buttons && x; }, 15000, 'buttons');
+  assert.deepStrictEqual(a.buttons, [
+    { label: 'View on GitHub', url: 'https://github.com/someone/promo-repo' },
+    { label: 'Get this plugin', url: 'https://github.com/someone/the-plugin' },
+  ]);
+  // no project link → only the plugin button
+  setCfg({ links: {} });
+  await waitFor(() => { const x = last(); return x && x.buttons && x.buttons.length === 1 && x.buttons[0].label === 'Get this plugin'; }, 15000, 'promo only');
+  setCfg({ promoButton: false });
+  await waitFor(() => { const x = last(); return x && !x.buttons; }, 15000, 'promo off');
+
+  // pause hides the card, resume brings it back with the same timer
+  setCfg({ pausedUntil: Date.now() + 3600e3 });
+  await waitFor(() => discord.last().activity === null, 15000, 'paused');
+  await sleep(3500);
+  assert.ok(await daemonAlive(), 'pause does not stop the process');
+  assert.strictEqual(discord.last().activity, null);
+  assert.ok(status().paused, 'status says paused');
+  setCfg({ pausedUntil: 0 });
+  const back = await waitFor(() => { const x = last(); return x && x; }, 15000, 'resumed');
+  assert.strictEqual(back.timestamps.start, start);
+  // a pause that expires ends by itself
+  setCfg({ pausedUntil: Date.now() + 1500 });
+  await waitFor(() => discord.last().activity === null, 15000, 'short pause');
+  await waitFor(() => !!last(), 15000, 'pause expired');
+
+  // Away: waiting longer than awayAfterMinutes (fractional only for the test: 0.02 min = 1.2 s)
+  setCfg({ awayAfterMinutes: 0.02 });
+  await waitFor(() => { const x = last(); return x && x.state && x.state.startsWith('Away · '); }, 15000, 'Away');
+  await hook({ hook_event_name: 'UserPromptSubmit', session_id: 'pr1', transcript_path: tr, cwd: repo, prompt: 'x', prompt_id: 'A1' });
+  await waitFor(() => { const x = last(); return x && x.state && x.state.startsWith('Thinking · '); }, 15000, 'working again');
 
   p.kill('SIGKILL');
   await waitFor(() => discord.last().activity === null, 15000, 'cleared');

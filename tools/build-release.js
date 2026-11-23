@@ -11,7 +11,7 @@ const zlib = require('zlib');
 
 const ROOT = path.resolve(__dirname, '..');
 const NAME = 'claude-code-discord-presence';
-const COMMON = ['app', 'assets', 'install.js', 'README.md', 'LICENSE', 'config.example.json'];
+const COMMON = ['app', 'assets', 'install.js', 'README.md', 'CHANGELOG.md', 'LICENSE', 'config.example.json'];
 
 // ---------- minimal ZIP writer (deflate, Unix permissions in the external attributes) ----------
 const CRC_TABLE = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
