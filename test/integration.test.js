@@ -810,11 +810,17 @@ test('"Get this plugin" button, pause/resume with the same timer, Away after wai
   assert.ok(await daemonAlive(), 'pause does not stop the process');
   assert.strictEqual(discord.last().activity, null);
   assert.ok(status().paused, 'status says paused');
+  // Discord restarts while paused: the new connection gets an explicit clear, not the old card
+  const hs = discord.handshakes;
+  await discord.stop(); discord.activities = [];
+  await discord.start();
+  await waitFor(() => discord.handshakes > hs && discord.activities.length > 0, 15000, 'reconnected while paused');
+  assert.strictEqual(discord.last().activity, null, 'cleared on the new connection');
   setCfg({ pausedUntil: 0 });
   const back = await waitFor(() => { const x = last(); return x && x; }, 15000, 'resumed');
   assert.strictEqual(back.timestamps.start, start);
-  // a pause that expires ends by itself
-  setCfg({ pausedUntil: Date.now() + 1500 });
+  // a pause that expires ends by itself (long enough for a slow CI machine to see it first)
+  setCfg({ pausedUntil: Date.now() + 5000 });
   await waitFor(() => discord.last().activity === null, 15000, 'short pause');
   await waitFor(() => !!last(), 15000, 'pause expired');
 

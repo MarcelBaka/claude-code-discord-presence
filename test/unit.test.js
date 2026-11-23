@@ -785,3 +785,24 @@ test('cli: pause/resume durations, away minutes, promo and auto-update switches'
   run('auto-update', 'on'); assert.deepStrictEqual([cfg().autoUpdate, cfg().checkUpdates], [true, true]);
   run('auto-update', 'off'); assert.strictEqual(cfg().autoUpdate, false);
 });
+
+test('configReadable: a config.json caught mid-write is not read as "all defaults"', () => {
+  const C = require('../app/lib/common');
+  const f = C.P.config;
+  const before = fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null;
+  try {
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.rmSync(f, { force: true });
+    assert.strictEqual(C.configReadable(), true, 'no file → defaults are fine');
+    fs.writeFileSync(f, '{"enabled": true, "language": "pl"');
+    assert.strictEqual(C.configReadable(), false, 'half-written');
+    fs.writeFileSync(f, '');
+    assert.strictEqual(C.configReadable(), false, 'empty (truncated before the write)');
+    fs.writeFileSync(f, '[1,2]');
+    assert.strictEqual(C.configReadable(), false, 'not an object');
+    fs.writeFileSync(f, '\uFEFF{"language":"pl"}');
+    assert.strictEqual(C.configReadable(), true, 'BOM is fine');
+  } finally {
+    if (before === null) fs.rmSync(f, { force: true }); else fs.writeFileSync(f, before);
+  }
+});

@@ -702,7 +702,9 @@ async function ensureDiscord() {
   try {
     await d.connect();
     discord = d; discordState = 'connected'; discordError = null; retryDelay = T.backoffMin;
-    lastPayloadJson = null; // po (ponownym) połączeniu wyślij aktywność od nowa – z tym samym znacznikiem start
+    // after a (re)connect: send the activity again (same start time) – or, when there is none
+    // (paused, no session), an explicit clear on the new connection
+    lastPayloadJson = '(reconnected)'; pendingPayload = undefined;
     log('discord connected');
     d.on('disconnected', () => { log('discord disconnected'); discord = null; scheduleRetry(new Error('disconnected')); });
     d.on('closeFrame', e => log('discord close frame', e.message));
@@ -748,10 +750,14 @@ function writeStatus(p) {
 async function tick() {
   if (shuttingDown) return;
   try {
+    // a config.json caught mid-write (or broken by hand) must not flip everything to the
+    // defaults for a tick – keep the last good configuration until it parses again
+    if (!C.configReadable()) return;
     const newCfg = C.loadConfig();
     if (JSON.stringify(newCfg) !== JSON.stringify(cfg)) {
       const appChanged = newCfg.applicationId !== cfg.applicationId;
-      cfg = newCfg; C.setLogMax(cfg.logMaxBytes); lastPayloadJson = null;
+      // resend (or clear, e.g. after `pause`) – null would mean "nothing is shown" and skip the clear
+      cfg = newCfg; C.setLogMax(cfg.logMaxBytes); lastPayloadJson = '(config changed)';
       if (appChanged && discord) { try { discord.close(); } catch {} discord = null; nextRetryAt = 0; retryDelay = T.backoffMin; }
       log('config reloaded');
     }

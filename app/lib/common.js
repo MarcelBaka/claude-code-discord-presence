@@ -125,6 +125,13 @@ function writeJsonAtomic(file, obj) {
   }
 }
 
+// false while config.json exists but does not parse (being written, or edited by hand)
+function configReadable() {
+  let txt;
+  try { txt = fs.readFileSync(P.config, 'utf8'); } catch (e) { return e.code === 'ENOENT'; }
+  try { const j = JSON.parse(txt.replace(/^﻿/, '')); return !!j && typeof j === 'object' && !Array.isArray(j); } catch { return false; }
+}
+
 function loadConfig() {
   const user = readJson(P.config, {}) || {};
   const cfg = { ...DEFAULT_CONFIG, ...user };
@@ -179,4 +186,4 @@ const STRINGS = {
 };
 function strings(lang) { return STRINGS[lang] || STRINGS.en; }
 
-module.exports = { P, pipeName, privateDir, ensurePrivateDirs, SUN_PATH_MAX, DEFAULT_APPLICATION_ID, DEFAULT_CONFIG, ensureDir, readJson, writeJsonAtomic, loadConfig, log, setLogMax, formatTokens, strings };
+module.exports = { P, pipeName, privateDir, ensurePrivateDirs, SUN_PATH_MAX, DEFAULT_APPLICATION_ID, DEFAULT_CONFIG, ensureDir, readJson, writeJsonAtomic, configReadable, loadConfig, log, setLogMax, formatTokens, strings };
