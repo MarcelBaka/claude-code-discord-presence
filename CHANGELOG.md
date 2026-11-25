@@ -4,6 +4,14 @@ All notable changes to this project. Versions follow [semantic versioning](https
 each release's notes on GitHub are built from its section here plus the list of merged pull
 requests. Add your change under the version in `app/version.json` when you open a pull request.
 
+## 1.5.1 – 2026-11-25
+
+### Fixed
+- **The card disappeared a few seconds after it showed up** (after switching between the chat and
+  Code tabs, or opening another project in Code). Newer versions of the Claude desktop app start
+  sessions through a helper `claude.exe` process, so the window check looked at a process with no
+  window and treated every session as "window closed". It now follows the app's process chain.
+
 ## 1.5.0 – 2026-11-23
 
 ### Added

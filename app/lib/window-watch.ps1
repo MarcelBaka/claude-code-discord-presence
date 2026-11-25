@@ -87,10 +87,26 @@ while ($true) {
   $parts = @()
   foreach ($p in $pids) {
     if (-not $parents.ContainsKey($p)) {
+      # The app may start a session through helper claude.exe processes (session ->
+      # helper -> window), so collect the parent and, while they are claude.exe too,
+      # its ancestors - any of them with a visible window means the window is open.
+      $anc = @()
       $pp = (Get-CimInstance Win32_Process -Filter "ProcessId=$p").ParentProcessId
-      if ($pp) { $parents[$p] = [uint32]$pp }
+      for ($i = 0; $pp -and $i -lt 5; $i++) {
+        $pr = Get-CimInstance Win32_Process -Filter "ProcessId=$pp"
+        # never step out of the app (explorer.exe always has a visible window)
+        if ($i -gt 0 -and (-not $pr -or $pr.Name -ne 'claude.exe')) { break }
+        $anc += [uint32]$pp
+        if (-not $pr) { break }
+        $pp = $pr.ParentProcessId
+      }
+      if ($anc.Count) { $parents[$p] = $anc }
     }
-    if ($parents.ContainsKey($p)) { $parts += ('"{0}":{1}' -f $p, $(if ($vis.Contains($parents[$p])) { 'true' } else { 'false' })) }
+    if ($parents.ContainsKey($p)) {
+      $open = $false
+      foreach ($a in $parents[$p]) { if ($vis.Contains($a)) { $open = $true; break } }
+      $parts += ('"{0}":{1}' -f $p, $(if ($open) { 'true' } else { 'false' }))
+    }
   }
 
   # the Claude desktop app's main window (not the claude.exe Claude Code CLI processes)
